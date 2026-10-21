@@ -1643,6 +1643,13 @@
   margin-left: calc(var(--content-level) * 16px);
 }
 
+/* 仅含复选框的叶子行启用 flex 对齐；父节点保持块级布局以维持子树纵向缩进。 */
+.content-outline-node:has(> .content-outline-select) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .content-outline-item {
   position: relative;
   display: grid;

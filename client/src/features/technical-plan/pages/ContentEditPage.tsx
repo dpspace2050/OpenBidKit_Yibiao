@@ -199,6 +199,15 @@ function ContentEditPage({
   const [draftContent, setDraftContent] = useState('');
   const [confirmRegenerateItem, setConfirmRegenerateItem] = useState<OutlineItem | null>(null);
   const [requirementItem, setRequirementItem] = useState<OutlineItem | null>(null);
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const selectedCount = selectedItemIds.size;
+  const toggleSelectedItem = (id: string) => {
+    setSelectedItemIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   const [regenerateRequirement, setRegenerateRequirement] = useState('');
   const [statsCollapsed, setStatsCollapsed] = useState(false);
   const [progressNow, setProgressNow] = useState(Date.now);
@@ -725,6 +734,16 @@ function ContentEditPage({
 
     return (
       <div className="content-outline-node" key={item.id} style={{ '--content-level': level } as CSSProperties}>
+          {isLeaf && item.content_mode === 'ai-generate' && (
+            <input
+              type="checkbox"
+              className="content-outline-select"
+              checked={selectedItemIds.has(item.id)}
+              disabled={taskBlocksGeneration}
+              onChange={() => toggleSelectedItem(item.id)}
+              aria-label={`选择小节 ${item.number} ${item.title}`}
+            />
+          )}
         <button
           type="button"
           className={`content-outline-item is-${status}${selectedItemId === item.id ? ' is-active' : ''}`}
