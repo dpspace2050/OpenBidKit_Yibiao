@@ -1078,6 +1078,8 @@ function normalizeContentGenerationRuntime(value) {
     touched_item_ids: normalizeStringArray(source.touched_item_ids),
     completed_stages: normalizeStringArray(source.completed_stages),
     target_item_id: String(source.target_item_id || '').trim(),
+    target_item_ids: normalizeStringArray(source.target_item_ids),
+    skip_post_stages: Boolean(source.skip_post_stages),
     regenerate_requirement: String(source.regenerate_requirement || '').trim(),
     html_output: source.html_output,
     updated_at: source.updated_at || now(),
@@ -1438,7 +1440,12 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   const continuingBody = Boolean((resume || retryFailedSections) && ['generating', 'auditing', 'table-cleaning'].includes(contentRuntime.phase));
   const continuingConversion = Boolean((resume || retryFailedSections)
     && ['sections-completed', 'word-converting', 'word-completed'].includes(contentRuntime.phase) && contentRuntime.html_output);
-  const regenerate = !resume && !retryContentCorrection && !retryFailedSections && Boolean(payload.regenerate);
+  const payloadTargetItemIds = Array.isArray(payload.targetItemIds)
+    ? [...new Set(payload.targetItemIds.map((id) => String(id || '').trim()).filter(Boolean))] : [];
+  // 恢复条件用 continuing（resume 与 retryFailedSections 都算），防止勾选轮失败重试膨胀为全量并误入后处理。
+  const targetItemIds = continuing ? contentRuntime.target_item_ids : payloadTargetItemIds;
+  const skipPostStages = continuing ? contentRuntime.skip_post_stages : payloadTargetItemIds.length > 0;
+  const regenerate = !resume && !retryContentCorrection && !retryFailedSections && Boolean(payload.regenerate) && !targetItemIds.length;
   const targetItemId = resume || (retryFailedSections && (contentRuntime.html_output || continuingConsistency))
     ? contentRuntime.target_item_id : String(payload.targetItemId || '').trim();
   if (retryContentCorrection && targetItemId) {
@@ -1504,6 +1511,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   contentRuntime = normalizeContentGenerationRuntime({
     ...contentRuntime,
     target_item_id: targetItemId,
+    target_item_ids: targetItemIds,
+    skip_post_stages: skipPostStages,
     regenerate_requirement: regenerateRequirement,
   });
   const completedStages = new Set(contentRuntime.completed_stages);
