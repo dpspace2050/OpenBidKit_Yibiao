@@ -273,6 +273,8 @@ function ContentEditPage({
     };
   }, { completedCount: 0, failedCount: 0, totalWords: 0 }), [leaves, outlineMeta, sections]);
   const { completedCount, failedCount, totalWords } = contentSummary;
+  const postProcessPending = completedCount === leaves.length && leaves.length > 0
+    && task?.status === 'success' && contentStats?.post_process_completed === false;
   const modeCounts = allLeaves.reduce<Record<OutlineContentMode, number>>((counts, item) => {
     if (item.content_mode) counts[item.content_mode] += 1;
     return counts;
@@ -886,9 +888,19 @@ function ContentEditPage({
               </button>
             </>
           ) : (
-            <button type="button" className="primary-action" onClick={handleGenerationButtonClick} disabled={generationSubmitting || sectionSubmitting || pausing || !leaves.length}>
-              {generationButtonLabel}
-            </button>
+            <>
+              <button type="button" className="primary-action" onClick={handleGenerationButtonClick} disabled={generationSubmitting || sectionSubmitting || pausing || !leaves.length}>
+                {generationButtonLabel}
+              </button>
+              {postProcessPending && (
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={taskBlocksGeneration}
+                  onClick={() => { void window.yibiao?.tasks.startContentGeneration({ postProcessOnly: true }); }}
+                >运行全文检查与优化</button>
+              )}
+            </>
           )}
         </div>
       </section>

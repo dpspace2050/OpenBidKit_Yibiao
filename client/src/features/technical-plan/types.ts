@@ -189,6 +189,8 @@ export interface BackgroundTaskState {
       layout_status?: 'checking' | 'supplementing' | 'rechecking' | 'completed';
       layout_total?: number;
       layout_completed?: number;
+      /** 本轮是否已执行全文检查与优化等后处理阶段；勾选轮会跳过并置 false，供前端提供补跑入口。 */
+      post_process_completed?: boolean;
       developer_stage_gate?: ContentGenerationPhase;
     };
   };
