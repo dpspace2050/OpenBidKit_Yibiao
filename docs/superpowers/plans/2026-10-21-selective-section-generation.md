@@ -295,19 +295,21 @@ Task 2 解析区（`skipPostStages` 定义处）改造为 effective 形态（补
 
 删除 Task 2 的 `const targetItemIds = ...` / `const skipPostStages = ...` 两个定义，后续 Tasks 2/4/5 引用处全部改用 `effectiveTargetItemIds` / `effectiveSkipPostStages`（本任务统一收口，避免旧名残留）。Task 4 的过滤块、Task 5 的传参同步改名。
 
-- [ ] **Step 3: 外层挂接点——2621 行后处理先例分支**
+- [ ] **Step 3: 外层挂接点——2621 行后处理先例分支（targets=全部叶子）**
 
-2620-2624 行改为（**这是无正文目标跑后处理 Agent 的唯一正确入口**——`runContentGeneration([])` 先例；不可走 2637 门之后，那里是直接收尾 done）：
+2620-2624 行改为（**这是无正文目标跑后处理 Agent 的唯一正确入口**——`runContentGeneration` 先例；不可走 2637 门之后，那里是直接收尾 done）：
 
 ```js
   try {
     if (postProcessOnly || continuingConsistency || continuingTableCleanup || continuingLayout) {
-      await runContentGeneration([]);
+      await runContentGeneration(postProcessOnly ? leaves : []);
       return;
     }
 ```
 
-- [ ] **Step 4: Agent 层——签名、覆盖块、四处 resuming 等同**
+⚠️ postProcessOnly 传 `leaves` 而非空数组：runContentGeneration 的 targets 参数流入 prepareGeneration 回调（2406 行 buildContentGenerationFiles）重建 `正文编排决策.json`——审计台账、修复工具、去表格的范围均由 decisions.targets 决定，传全部叶子才能实现"**全文**检查与优化"（传空数组则 decisions.targets 为空、审计只覆盖末轮勾选子集甚至崩溃）。stage 覆盖为 auditing 后 Agent 不会重新生成这些节（active tools 是 CONSISTENCY_TOOLS）。附带效果全部正确：`checkTotalWords` 因 targets.length === leaves.length 自动恢复；原方案还原因 completedStages 已含 restoring 被跳过（2400 行条件）。
+
+- [ ] **Step 4: Agent 层——签名、覆盖块、两处 resuming 等同**
 
 (a) runContentGenerationAgent 签名再加 `postProcessOnly = false`（紧邻 skipPostStages）。
 
@@ -321,16 +323,8 @@ Task 2 解析区（`skipPostStages` 定义处）改造为 effective 形态（补
   }
 ```
 
-(c) **四处 resuming 等同改造**（postProcessOnly 是新轮非 resume，但不重建输入、不清产物、不清阶段状态——审计依赖上轮工作区与台账）：
+(c) **两处 resuming 等同改造**（673 行 prepareFiles **不动**——Step 3 已保证以全量叶子重建 decisions，prepareRunSummary 也要跑；只改"清产物、清状态"两处，保住上轮工作区与阶段状态）：
 
-673 行：
-```js
-  const files = planning ? planning.files : (resuming || postProcessOnly) ? [] : await prepareFiles(localContext);
-```
-674 行：
-```js
-  if (!planning && !resuming && !postProcessOnly) prepareRunSummary(files);
-```
 686 行：
 ```js
   if (reuseSession && !resuming && !postProcessOnly) clearTaskArtifacts(localContext.workspace_dir);
@@ -341,27 +335,28 @@ Task 2 解析区（`skipPostStages` 定义处）改造为 effective 形态（补
     ...(!resuming && !postProcessOnly && !continuingPlanning ? { prompted_stage: null, compaction_pending: null } : {}),
 ```
 
-改后自动正确之处（无需改动，核对即可）：695 行 `stage === 'auditing'` 触发 extractLedger 补台账；702 行 prompt 选择走 consistencyPrompt；743 行 initializeContent 用上轮 decisions.targets 建图片保护（`consistencyState` 分支给 CONSISTENCY_TOOLS）；700 行 runTask 以 reuseSession resume 模式续会话。
+改后自动正确之处（无需改动，核对即可）：695 行 `stage === 'auditing'` 触发 extractLedger 按新 decisions 补台账；702 行 prompt 选择走 consistencyPrompt；743 行 initializeContent 用新 decisions.targets 建图片保护（`consistencyState` 分支给 CONSISTENCY_TOOLS）；700 行 runTask 以 reuseSession resume 模式续会话。
 
 (d) 2389 行 runContentGenerationAgent 调用处参数加 `postProcessOnly,`（紧邻 `skipPostStages`）。
 
-- [ ] **Step 5: contentStats 暴露后处理完成标志**
+- [ ] **Step 5: contentStats 暴露后处理完成标志（写入点在 runContentGeneration 内）**
 
-外层任务 success 收尾处（2663 行 `contentStats.phase = 'done'` 附近）加：
+⚠️ 成功落库点不在 2663 行（那里只有 retryContentCorrection 轮可达）——勾选/全量/补跑轮的成功 return 都在 runContentGeneration 函数内的成功 checkpointTask（约 2578-2584 行，在该函数内搜 `checkpointTask({ status: 'success'`）。runContentGeneration 是 runContentGenerationTask 的闭包函数，直接访问外层变量。在该 success checkpoint 之前（statsSnapshot 最后一次调用前）插入：
 
 ```js
-  contentStats.post_process_completed = postProcessOnly || !effectiveSkipPostStages;
+      contentStats.post_process_completed = postProcessOnly || !effectiveSkipPostStages;
 ```
 
-语义：全量/补跑轮=true；勾选轮=false。置于 statsSnapshot() 最后一次调用之前，确保落库。
+语义：全量/补跑轮=true；勾选轮=false。
 
-- [ ] **Step 6: 构建 + node 冒烟 + Commit**
+- [ ] **Step 6: 构建 + 旧名残留检查 + Commit**
 
 ```powershell
 npm run build
 node -e "require('./electron/services/taskService.cjs'); require('./electron/services/contentGenerationAgent.cjs'); console.log('syntax ok')"
+git grep -n "targetItemIds\|skipPostStages" -- electron/services || echo "旧名残留检查：仅 payload.targetItemIds（taskService/agent 签名处）合法，其余应为 effective* 命名"
 git add electron/services/taskService.cjs electron/services/contentGenerationTask.cjs electron/services/contentGenerationAgent.cjs
-git commit -m "feat: postProcessOnly 后处理补跑入口（复用审计链与上轮工作区）"
+git commit -m "feat: postProcessOnly 后处理补跑入口（全量叶子审计范围）"
 ```
 
 ---
@@ -389,21 +384,24 @@ git commit -m "feat: postProcessOnly 后处理补跑入口（复用审计链与�
 
 - [ ] **Step 2: renderTree AI 叶子行加复选框**
 
-726-737 行 `<button ... content-outline-item` 内、`<span className="content-outline-dot"` 之前插入：
+726-727 行 `<div className="content-outline-node">` 内、`<button ...>` **之前**插入（⚠️ 不能放 button 里面——input 嵌套 button 是非法 HTML 结构，放同级用 flex 对齐）：
 
 ```tsx
+      <div className="content-outline-node" key={item.id} style={{ '--content-level': level } as CSSProperties}>
           {isLeaf && item.content_mode === 'ai-generate' && (
             <input
               type="checkbox"
               className="content-outline-select"
               checked={selectedItemIds.has(item.id)}
               disabled={taskBlocksGeneration}
-              onClick={(event) => event.stopPropagation()}
               onChange={() => toggleSelectedItem(item.id)}
               aria-label={`选择小节 ${item.number} ${item.title}`}
             />
           )}
+        <button
 ```
+
+若 `content-outline-node` 现有样式非 flex 导致对齐错乱，补一条样式 `.content-outline-node { display: flex; align-items: center; gap: 4px; }`（在对应样式文件中，搜 `content-outline-node` 找到定义处按需调整）。
 
 - [ ] **Step 3: 构建 + Commit**
 
@@ -503,11 +501,11 @@ startGeneration 签名改 `startGeneration(confirmedConcurrency = false, confirm
 
 - [ ] **Step 5: 主按钮 onClick 勾选分支**
 
-找到主按钮 onClick（约 545-550 行 `taskFailed ? void retryFailedSections() : void startGeneration()` 分支区），改为勾选态统一走 startGeneration：
+找到 `handleGenerationButtonClick`（约 537-551 行，含 `taskFailed ? void retryFailedSections() : void startGeneration()` 分支），函数开头加勾选态短路（勾选即本轮明确意图，压制失败重试路径）：
 
 ```tsx
     if (selectedCount > 0) { void startGeneration(); return; }
-    // 原有 taskFailed ? retryFailedSections() : startGeneration() 逻辑
+    // 以下保持 handleGenerationButtonClick 原有逻辑
 ```
 
 - [ ] **Step 6: analytics 埋点适配**
