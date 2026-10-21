@@ -554,7 +554,7 @@ function ContentEditPage({
   };
 
   const handleGenerationButtonClick = () => {
-    if (selectedCount > 0) { void startGeneration(); return; }
+    // 运行/暂停优先于勾选（与按钮文案链一致），避免残留勾选劫持暂停/继续。
     if (running) {
       void pauseGeneration();
       return;
@@ -563,6 +563,7 @@ function ContentEditPage({
       void resumeGeneration();
       return;
     }
+    if (selectedCount > 0) { void startGeneration(); return; }
     if (retryingWordConversion || retryingConsistency || retryingSectionModification || retryingBodyGeneration || retryingTableCleanup || retryingLayoutCheck) {
       void retryFailedSections();
       return;
@@ -681,6 +682,7 @@ function ContentEditPage({
       setRequirementItem(null);
       setRegenerateRequirement('');
       showToast('小节重新生成任务已在后台启动', 'success');
+      setSelectedItemIds(new Set());
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动小节重新生成失败', 'error');
     } finally {
@@ -897,7 +899,16 @@ function ContentEditPage({
                   type="button"
                   className="secondary-action"
                   disabled={taskBlocksGeneration}
-                  onClick={() => { void window.yibiao?.tasks.startContentGeneration({ postProcessOnly: true }); }}
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await window.yibiao?.tasks.startContentGeneration({ postProcessOnly: true });
+                        showToast('全文检查与优化任务已在后台启动', 'success');
+                      } catch (error) {
+                        showToast(error instanceof Error ? error.message : '启动全文检查与优化失败', 'error');
+                      }
+                    })();
+                  }}
                 >运行全文检查与优化</button>
               )}
             </>

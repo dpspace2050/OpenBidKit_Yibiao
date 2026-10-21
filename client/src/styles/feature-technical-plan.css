@@ -1650,6 +1650,11 @@
   gap: 4px;
 }
 
+/* 与 .content-outline-item 的行间距对齐，避免复选框垂直偏移。 */
+.content-outline-select {
+  margin-bottom: 8px;
+}
+
 .content-outline-item {
   position: relative;
   display: grid;

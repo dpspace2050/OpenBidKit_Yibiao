@@ -1491,7 +1491,8 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
       }
       // 只读取用户已保存的测试状态，在落库和清理会话前提示，不重新请求生图测试。
       const imageOptions = technicalPlan.contentGenerationOptions;
-      if (imageOptions?.imageQuantity > 0 && imageOptions?.useAiImages
+      // 补跑轮只做后处理不生图，跳过生图模型可用性拦截。
+      if (!taskPayload?.postProcessOnly && imageOptions?.imageQuantity > 0 && imageOptions?.useAiImages
         && aiService.getConfig().image_model?.status !== 'available') {
         throw new Error('已开启 AI 生图，但当前生图模型不可用。请去设置-生图模型中点击测试，并配置可用渠道。');
       }
