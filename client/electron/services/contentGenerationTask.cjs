@@ -2420,6 +2420,7 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
           failTask(error) {
             if (!controller.signal.aborted) controller.abort(error);
           },
+          skipPostStages,
           async prepareGeneration(context) {
             if (hasOriginalPlan && !completedStages.has('restoring') && targets.some(({ item }) => !directGenerationIds.has(item.id))) {
               await restoreOriginalMaterialsIfNeeded(targets.filter(({ item }) => !directGenerationIds.has(item.id)), context);

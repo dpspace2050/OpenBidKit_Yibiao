@@ -513,7 +513,7 @@ ${planningHandoff ? '基础编排已由程序处理并保存：字数已校正�
 // 基础编排、正文与后处理共用一次主调用；暂停后仍从持久 Session 和已保存阶段恢复。
 async function runContentGenerationAgent({ agentService, aiService, generationOptions = {}, resume, hasKnowledgeBase, hasOriginalPlan, resolveOriginalImagePath,
   signal, planning, prepareGeneration, buildFiles, checkLayout, onLayoutProgress = () => {}, onCheckpoint = () => {}, onActivity, onProgress,
-  onWordAdjustProgress = () => {}, onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {}, failTask = () => {} }) {
+  onWordAdjustProgress = () => {}, onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {}, failTask = () => {}, skipPostStages = false }) {
   const reuseSession = agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY);
   const persistent = reuseSession ? agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY) : null;
   const persistentState = persistent?.state || {};
@@ -787,6 +787,11 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
             remaining_issues: [...submitted.remaining_issues, ...accepted.map(item => item.message)] });
         }
         return finishConsistency(context, checked);
+      }
+      // 勾选轮跳过字数校正与全文后处理，直接结束 Agent 任务，外层进入 Word 转换。
+      if (skipPostStages) {
+        onActivity?.({ message: '本轮为勾选生成，跳过字数校正与全文后处理（一致性审计、表格清理、格式自检）。' });
+        return { complete: true };
       }
       // 字数校正结束后进入一致性审计；进入审计前压缩上下文，核对小节事实与压缩并行。
       const startAudit = () => {
