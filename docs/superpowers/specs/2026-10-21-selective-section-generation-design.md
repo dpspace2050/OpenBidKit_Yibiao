@@ -87,7 +87,7 @@ contentRuntime.target_item_ids = targetItemIds;      // 本轮勾选清单
 contentRuntime.skip_post_stages = targetItemIds.length > 0;
 ```
 
-   resume 路径（continuing 为真）时从 `contentRuntime` 恢复：`targetItemIds = resume ? contentRuntime.target_item_ids : payload 数组`，`skipPostStages` 同理恢复。全量轮（不带 targetItemIds 的新启动）将两字段清空。
+   resume 路径（continuing 为真）时从 `contentRuntime` 恢复：`targetItemIds = resume ? contentRuntime.target_item_ids : payload 数组`，`skipPostStages` 同理恢复。全量轮（不带 targetItemIds 的新启动）将两字段清空。**同步扩展 `normalizeContentGenerationRuntime` 白名单**（1070-1085 行，显式字段构造，未知字段丢弃）：新增 `target_item_ids: normalizeStringArray(source.target_item_ids)` 与 `skip_post_stages: Boolean(source.skip_post_stages)`，否则 1504/1554 行的两次 re-normalize 会在落库前抹掉两字段，resume 恢复拿到 undefined。
 
 #### (c) contentGenerationAgent.cjs — 后处理跳过
 
