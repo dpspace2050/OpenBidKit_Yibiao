@@ -390,8 +390,11 @@ function normalizeContentPlan(value, allowedKnowledgeItemIds) {
 }
 
 // 按全文 AI 小节数确定配图名额；稳定排序保留同分小节的目录顺序，0 分不入选。
-function selectContentImageTargets(leaves, plans, imageQuantity) {
-  const limit = Math.floor(leaves.length * imageQuantity / 100);
+// 勾选轮（partialScope）名额基数与候选池均为本轮目标：小批量取 ceil 并保底 1，历史轮标记不参与本轮名额结算。
+function selectContentImageTargets(leaves, plans, imageQuantity, partialScope = false) {
+  const limit = partialScope && imageQuantity > 0
+    ? Math.max(1, Math.ceil(leaves.length * imageQuantity / 100))
+    : Math.floor(leaves.length * imageQuantity / 100);
   const candidates = leaves
     .filter(({ item }) => plans[item.id]?.plan?.image_suitability_score > 0)
     .sort((left, right) => plans[right.item.id].plan.image_suitability_score - plans[left.item.id].plan.image_suitability_score);
@@ -1560,6 +1563,17 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     tasksToRun = tasksToRun.filter(({ item }) => pendingIds.has(item.id));
   }
 
+  if (targetItemIds.length) {
+    const idSet = new Set(targetItemIds);
+    // 新轮以全集为基准（支持勾选已 success 节重生成——tasksToRun 默认只含非 success 节，直接交集会空集抛错）；
+    // 继续/重试轮与待生成清单取交集（限定 resume/retry 范围）。
+    const base = continuing ? tasksToRun : leaves;
+    tasksToRun = base.filter(({ item }) => idSet.has(item.id));
+    if (!tasksToRun.length) {
+      throw new Error('所选小节均不是待生成的 AI 正文小节');
+    }
+  }
+
   contentRuntime = normalizeContentGenerationRuntime({
     ...contentRuntime,
     target_item_id: targetItemId,
@@ -2158,7 +2172,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         ...(originalMaterial ? { original_material: originalMaterial } : {}),
       }, tableRequirement);
     }
-    const selectedImageIds = selectContentImageTargets(leaves, nextPlans, imageQuantity);
+    const imageScopeLeaves = targetItemIds.length ? targets : leaves;
+    const selectedImageIds = selectContentImageTargets(imageScopeLeaves, nextPlans, imageQuantity, Boolean(targetItemIds.length));
     for (const { item } of targets) {
       const plan = { ...nextPlans[item.id].plan, image_needed: selectedImageIds.has(item.id) };
       nextPlans[item.id] = { ...nextPlans[item.id], plan, updated_at: now() };
