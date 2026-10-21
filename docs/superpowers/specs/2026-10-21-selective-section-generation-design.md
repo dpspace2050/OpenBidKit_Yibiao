@@ -59,14 +59,16 @@
 
 ### 3.2 后端改动
 
-#### (a) taskService.cjs — startContentGeneration 分流
+#### (a) taskService.cjs — 分流与早返回
 
-分流条件（1468-1470 行）只认单数 `targetItemId`，数组 `targetItemIds` 自然落入全量管线。预期零改动，验证即可。
+1. 分流条件（1468-1470 行）只认单数 `targetItemId`，数组 `targetItemIds` 自然落入全量管线。预期零改动，验证即可。
+2. **早返回排除**（1484-1490 行）：`hasPendingSections` 早返回在文档全部 success 时会拦截"勾选已 success 节重生成"场景，需在早返回条件中加 `&& !taskPayload?.targetItemIds?.length`。
 
 #### (b) contentGenerationTask.cjs — 清单过滤 + 跳过开关
 
 1. 解析：`const targetItemIds = Array.isArray(payload.targetItemIds) ? payload.targetItemIds.map(String).filter(Boolean) : [];`
-2. `tasksToRun` 构建（1517 行后）插入：
+2. **组合守卫**：`targetItemIds` 轮忽略 `regenerate`（勾选即明确本轮范围，两者组合无定义）。
+3. `tasksToRun` 过滤插入在 **1549-1552 行（pending_item_ids 再过滤）之后**——若插在 1517 行后，大纲新增叶子场景下 pending_item_ids 交集会削减甚至清空勾选集（清空时落入 2637 行"无待生成"静默成功）：
 
 ```js
 if (targetItemIds.length) {
@@ -78,11 +80,18 @@ if (targetItemIds.length) {
 
 勾选的已 success 节进入 `tasksToRun` 后由现有循环（1562-1573 行）重置为 idle 重新生成，`section_words` 与 Word 分节缓存按 section_id 覆盖。
 
-3. 向 Agent 层传 `skipPostStages: targetItemIds.length > 0`。
+4. **清单与跳过标志持久化到 contentRuntime**（关键，resume 依赖）：`pending_item_ids` 从不写入本轮 tasksToRun（仅大纲新增叶时由 technicalPlanStore 写入，任务内 2552/2681 行只做删减），因此 resume 若只靠 pending_item_ids 会跑所有非 success 节且丢失 skip 标志。新增 runtime 字段：
+
+```js
+contentRuntime.target_item_ids = targetItemIds;      // 本轮勾选清单
+contentRuntime.skip_post_stages = targetItemIds.length > 0;
+```
+
+   resume 路径（continuing 为真）时从 `contentRuntime` 恢复：`targetItemIds = resume ? contentRuntime.target_item_ids : payload 数组`，`skipPostStages` 同理恢复。全量轮（不带 targetItemIds 的新启动）将两字段清空。
 
 #### (c) contentGenerationAgent.cjs — 后处理跳过
 
-`runContentGenerationAgent` 新增参数 `skipPostStages = false`。在 `continueTask` 的 generating 完成点（797-813 行）：`skipPostStages` 为 true 时不进入字数校正与 `startAudit()`，直接返回结束 Agent 任务，由外层进入 Word 转换阶段。
+`runContentGenerationAgent` 新增参数 `skipPostStages = false`。在 `continueTask` 的 generating 完成点（797-813 行）：`skipPostStages` 为 true 时不进入字数校正与 `startAudit()`，按 `finishLayout` 先例（pi/piRuntimeService.cjs:651/660）返回 `{ complete: true }` 结束 Agent 任务（piRuntimeService.cjs:1172 对 `complete===true` 正常 resolve），由外层 2524→2540 行直接进入 sections-completed → word-converting（外层推进不依赖审计阶段）。同模式跳过时修正外层约 1621 行"审计为必做阶段"类日志文案，避免误导（勾选轮输出"本轮为勾选生成，跳过全文后处理"）。
 
 ### 3.3 前端改动（ContentEditPage.tsx）
 
@@ -113,13 +122,14 @@ await window.yibiao?.tasks.startContentGeneration({
 | 勾全部 AI 叶子节 | `targets.length === leaves.length` → 字数总检自动恢复（2408 行现有条件），`skipPostStages` 仍为 true 跳过后处理（语义一致性：勾选=本轮局部，后处理留给全量轮） |
 | 勾选节含已 success | 视为重新生成，覆盖原内容与字数记录 |
 | 勾选非 AI 叶子（其他模式/父节点） | UI 不渲染复选框；后端 `leaves ∩ idSet` 天然过滤，交集为空时报错提示 |
-| 中断恢复 | 勾选生成暂停后，现有 resume 机制按 pending_item_ids 继续（本轮勾选节）；后续全量轮不受影响 |
+| 中断恢复 | 勾选清单与 skip 标志持久化于 `contentRuntime`（target_item_ids / skip_post_stages），暂停后 resume 从 runtime 恢复，只继续本轮勾选节且保持跳过后处理；后续全量轮（新启动不带 targetItemIds）清空两字段恢复正常行为 |
 | 部分生成的导出 | 未生成节维持现有空占位行为，导出链路不变 |
 | 会话复用 | 首次勾选生成会建立原正文 Agent 会话；后续勾选轮与全量轮在同一持久会话续用（现有 reuseSession 机制） |
 
 ### 3.6 错误处理
 
 - 交集为空：启动即报错"所选小节均不是待生成的 AI 正文小节"，不建任务、不清产物。
+- `regenerate` + `targetItemIds` 组合：守卫忽略 `regenerate`，以勾选清单为准。
 - 运行中重复触发：现有 `isActiveTaskStatus` 拦截（"当前正文任务正在执行"）对勾选轮同样生效。
 - 单节失败：沿用现有 per-section error 状态与"重试失败小节"机制。
 
@@ -128,7 +138,8 @@ await window.yibiao?.tasks.startContentGeneration({
 1. **dev 模式功能验证**（`npm run dev`，智谱 glm-5.3）：
    - 勾 2 节生成 → 无审计/表格清理/格式自检日志，Word 出片，目录状态正确
    - 取消勾选 → "生成正文" → 剩余节继续生成，审计照常
-   - 勾含已 success 节 → 覆盖重生成，无重复内容
+   - 勾含已 success 节 → 覆盖重生成，无重复内容（文档全 success 状态下勾选也能启动，不被早返回拦截）
+   - 勾选生成中途暂停 → resume 只继续勾选节且不触发审计
    - 不勾选的三个原始操作（开始/继续/重试失败）回归不变
 2. **打包**：`npm install`（postinstall: patch-package + electron-builder install-app-deps）→ `npm run dist:win`（含 dotnet publish OpenXmlHelper，dotnet 8.0.422 已验证）→ 产出 zip 免安装版替换 `D:\Yibiao`
 3. **生产验证**：用打包版跑一轮勾选生成。
