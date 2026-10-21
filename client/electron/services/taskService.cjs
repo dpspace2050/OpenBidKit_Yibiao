@@ -1495,7 +1495,8 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
         && aiService.getConfig().image_model?.status !== 'available') {
         throw new Error('已开启 AI 生图，但当前生图模型不可用。请去设置-生图模型中点击测试，并配置可用渠道。');
       }
-      const initialState = sectionRegeneration || continuing
+      // 补跑轮（postProcessOnly）沿用原 runtime，不重建——completed_stages 保留以跳过原方案还原，sections 状态不动。
+      const initialState = sectionRegeneration || continuing || taskPayload?.postProcessOnly
         ? { contentGenerationRuntime: { ...technicalPlan.contentGenerationRuntime, generation_started: true } }
         : prepareContentGenerationStart(technicalPlan, taskPayload);
       return startManagedTask('content-generation', taskPayload, sectionRegeneration ? runContentSectionRegenerationTask : runContentGenerationTask, initialState, {
@@ -1504,7 +1505,7 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
           if (sectionRegeneration) return;
           // 只有明确全文重生才删除正文会话；局部新增与勾选轮继续使用原 Session。
           if (!continuing && taskPayload?.regenerate && !taskPayload?.targetItemIds?.length) agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
-          if (technicalPlan.originalPlanFile?.markdownPath && !continuing) {
+          if (technicalPlan.originalPlanFile?.markdownPath && !continuing && !taskPayload?.postProcessOnly) {
             agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
           }
         },
