@@ -38,7 +38,7 @@ interface OutlineNodeMeta {
   words: number;
 }
 
-type ContentGenerationAction = 'start' | 'continue' | 'regenerate' | 'regenerate_section';
+type ContentGenerationAction = 'start' | 'continue' | 'regenerate' | 'selective' | 'regenerate_section';
 
 const statusLabels: Record<TreeStatus, string> = {
   idle: '待生成',
@@ -200,6 +200,7 @@ function ContentEditPage({
   const [confirmRegenerateItem, setConfirmRegenerateItem] = useState<OutlineItem | null>(null);
   const [requirementItem, setRequirementItem] = useState<OutlineItem | null>(null);
   const [selectedItemIds, setSelectedItemIds] = useState<Set<string>>(new Set());
+  const [confirmSelectiveOpen, setConfirmSelectiveOpen] = useState(false);
   const selectedCount = selectedItemIds.size;
   const toggleSelectedItem = (id: string) => {
     setSelectedItemIds((previous) => {
@@ -247,6 +248,8 @@ function ContentEditPage({
     return () => window.clearInterval(timer);
   }, [taskInFlight]);
   const taskBlocksGeneration = taskInFlight || paused || sectionSubmitting || generationSubmitting;
+  const selectedIdList = [...selectedItemIds];
+  const hasSelection = selectedIdList.length > 0;
   const contentStats = task?.stats?.content;
   const previewReadySectionIds = useMemo(() => new Set(contentStats?.preview_ready_section_ids || []), [contentStats?.preview_ready_section_ids]);
   const originalRestoration = hasOriginalPlan && typeof contentStats?.original_restoration?.total_words === 'number' && contentStats.original_restoration.source_hash === originalPlanContentHash
@@ -393,6 +396,8 @@ function ContentEditPage({
       ? '暂停'
       : paused
         ? '继续'
+        : selectedCount > 0
+          ? `生成所选 ${selectedCount} 节`
         : retryingSectionModification
           ? '重试小节修改'
         : retryingBodyGeneration
@@ -544,6 +549,7 @@ function ContentEditPage({
   };
 
   const handleGenerationButtonClick = () => {
+    if (selectedCount > 0) { void startGeneration(); return; }
     if (running) {
       void pauseGeneration();
       return;
@@ -583,6 +589,7 @@ function ContentEditPage({
 
     await window.yibiao?.tasks.startContentGeneration({
       regenerate,
+      ...(hasSelection ? { targetItemIds: selectedIdList } : {}),
       generationOptions: savedGenerationOptions,
     });
     trackConfigUsage({
@@ -590,15 +597,16 @@ function ContentEditPage({
       use_mermaid_images: savedGenerationOptions.useMermaidImages,
       use_ai_images: savedGenerationOptions.useAiImages,
       content_generation_action: contentGenerationAction,
-      enable_consistency_audit: true,
+      enable_consistency_audit: !hasSelection,
       consistency_repair_mode: 'agent',
       enable_original_plan_coverage_audit: false,
     }, config);
     showToast(regenerate ? '正文重新生成任务已在后台启动' : '正文生成任务已在后台启动', 'success');
+    setSelectedItemIds(new Set());
   };
 
   // 启动前提醒当前模型并发偏低；用户确认后仍使用最新配置，重复点击不重复提交。
-  const startGeneration = async (confirmedConcurrency = false) => {
+  const startGeneration = async (confirmedConcurrency = false, confirmedOverwrite = false) => {
     if (generationStarting.current || taskBlocksGeneration || (concurrencyWarning && !confirmedConcurrency)) return;
     if (!outlineData?.outline?.length) {
       showToast('请先生成目录', 'info');
@@ -618,12 +626,18 @@ function ContentEditPage({
       const nextImageModelStatus = config?.image_model?.status || 'untested';
       const nextImageModelAvailable = nextImageModelStatus === 'available';
       const savedGenerationOptions = normalizeContentGenerationOptions(contentGenerationOptions, nextImageModelAvailable);
-      const regenerate = leaves.length > 0 && completedCount === leaves.length;
-      const contentGenerationAction: ContentGenerationAction = regenerate
+      const regenerate = !hasSelection && leaves.length > 0 && completedCount === leaves.length;
+      const contentGenerationAction: ContentGenerationAction = hasSelection
+        ? 'selective'
+        : regenerate
           ? 'regenerate'
           : completedCount > 0
             ? 'continue'
             : 'start';
+      if (!confirmedOverwrite && hasSelection && [...selectedItemIds].some((id) => sections[id]?.status === 'success')) {
+        setConfirmSelectiveOpen(true);
+        return;
+      }
       await launchContentGeneration({ savedGenerationOptions, config, regenerate, contentGenerationAction });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动正文生成任务失败', 'error');
@@ -993,6 +1007,19 @@ function ContentEditPage({
           >
             确定
           </button>
+        )}
+      />
+
+      <AppDialog
+        open={confirmSelectiveOpen}
+        onOpenChange={setConfirmSelectiveOpen}
+        title="覆盖重新生成？"
+        description={`所选中 ${selectedCount} 个小节中含已生成内容的小节，将继续并覆盖这些小节的正文。`}
+        actions={(
+          <>
+            <button type="button" className="secondary-action" onClick={() => setConfirmSelectiveOpen(false)}>取消</button>
+            <button type="button" className="primary-action" disabled={generationSubmitting} onClick={() => { setConfirmSelectiveOpen(false); void startGeneration(true, true); }}>生成所选</button>
+          </>
         )}
       />
 
