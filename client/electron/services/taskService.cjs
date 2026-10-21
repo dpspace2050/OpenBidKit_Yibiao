@@ -1502,8 +1502,8 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
         primarySession: true,
         beforeStart: () => {
           if (sectionRegeneration) return;
-          // 只有明确全文重生才删除正文会话；局部新增继续使用原 Session。
-          if (!continuing && taskPayload?.regenerate) agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+          // 只有明确全文重生才删除正文会话；局部新增与勾选轮继续使用原 Session。
+          if (!continuing && taskPayload?.regenerate && !taskPayload?.targetItemIds?.length) agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
           if (technicalPlan.originalPlanFile?.markdownPath && !continuing) {
             agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
           }

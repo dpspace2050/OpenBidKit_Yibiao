@@ -611,6 +611,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   const consistencyPrompt = workspaceDir => buildConsistencyPrompt(consistencyState, { hasKnowledgeBase, workspaceDir });
   const createAuditState = () => ({ status: 'extracting', extract_completed: 0, extract_total: 0, remaining_issues: [], failed_sections: [], summary: '', submission: null });
   // 补跑入口：无正文生成阶段，直接从一致性审计进入，复用完整后处理链。
+  // postProcessOnly 轮必为新会话恢复（resuming=false → savedState={}），consistencyState 恒为空，守卫仅为防御。
   if (postProcessOnly && !consistencyState) {
     consistencyState = createAuditState();
     stage = 'auditing';

@@ -1398,7 +1398,11 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   const resume = Boolean(payload.resume);
   const loadedPlan = resume ? (previousState || {}) : (workspaceStore.loadTechnicalPlan() || {});
   const continuing = resume || ['retryContentCorrection', 'retry_content_correction', 'retryFailedSections', 'retry_failed_sections'].some(field => payload[field]);
-  const storedPlan = continuing ? loadedPlan : { ...loadedPlan, ...prepareContentGenerationStart(loadedPlan, payload) };
+  const retryContentCorrection = !resume && Boolean(payload.retryContentCorrection ?? payload.retry_content_correction);
+  const retryFailedSections = !resume && Boolean(payload.retryFailedSections ?? payload.retry_failed_sections);
+  const postProcessOnly = !resume && !retryFailedSections && Boolean(payload.postProcessOnly);
+  // postProcessOnly 补跑轮沿用 loadedPlan：保留 completed_stages 与 sections/plans 状态，避免重建导致原方案还原 Agent 全量重跑。
+  const storedPlan = (continuing || postProcessOnly) ? loadedPlan : { ...loadedPlan, ...prepareContentGenerationStart(loadedPlan, payload) };
   const wordControl = normalizeOutlineWordControlSnapshot(storedPlan.outlineWordControlSnapshot);
   let outlineData = storedPlan.outlineData;
 
@@ -1434,8 +1438,6 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   if (resume && storedPlan.contentGenerationTask?.status !== 'paused') {
     throw new Error('没有可继续的已暂停正文生成任务');
   }
-  const retryContentCorrection = !resume && Boolean(payload.retryContentCorrection ?? payload.retry_content_correction);
-  const retryFailedSections = !resume && Boolean(payload.retryFailedSections ?? payload.retry_failed_sections);
   let contentRuntime = normalizeContentGenerationRuntime(storedPlan.contentGenerationRuntime || previousState?.contentGenerationRuntime);
   const continuingConsistency = Boolean((resume || retryFailedSections) && contentRuntime.phase === 'auditing');
   const continuingTableCleanup = Boolean((resume || retryFailedSections) && contentRuntime.phase === 'table-cleaning');
@@ -1445,7 +1447,6 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     && ['sections-completed', 'word-converting', 'word-completed'].includes(contentRuntime.phase) && contentRuntime.html_output);
   const payloadTargetItemIds = Array.isArray(payload.targetItemIds)
     ? [...new Set(payload.targetItemIds.map((id) => String(id || '').trim()).filter(Boolean))] : [];
-  const postProcessOnly = !resume && !retryFailedSections && Boolean(payload.postProcessOnly);
   // 恢复条件用 continuing（resume 与 retryFailedSections 都算），防止勾选轮失败重试膨胀为全量并误入后处理。
   const effectiveTargetItemIds = postProcessOnly ? [] : (continuing ? contentRuntime.target_item_ids : payloadTargetItemIds);
   const effectiveSkipPostStages = postProcessOnly ? false : (continuing ? contentRuntime.skip_post_stages : payloadTargetItemIds.length > 0);
@@ -1566,13 +1567,15 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
 
   if (effectiveTargetItemIds.length) {
     const idSet = new Set(effectiveTargetItemIds);
-    // 新轮以全集为基准（支持勾选已 success 节重生成——tasksToRun 默认只含非 success 节，直接交集会空集抛错）；
-    // 继续/重试轮与待生成清单取交集（限定 resume/retry 范围）。
+    // 新轮以全集为基准（支持勾选已 success 节重生成）；继续/重试轮与待生成清单取交集（限定 resume/retry 范围）。
     const base = continuing ? tasksToRun : leaves;
-    tasksToRun = base.filter(({ item }) => idSet.has(item.id));
-    if (!tasksToRun.length) {
+    const filtered = base.filter(({ item }) => idSet.has(item.id));
+    if (filtered.length) {
+      tasksToRun = filtered;
+    } else if (!continuing) {
       throw new Error('所选小节均不是待生成的 AI 正文小节');
     }
+    // continuing 轮交集为空：勾选小节均已生成，回退不过滤，由后续阶段原有逻辑收尾。
   }
 
   contentRuntime = normalizeContentGenerationRuntime({
@@ -1642,7 +1645,9 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   if (wordControl.minimumWords > 0 || wordControl.maximumWords > 0 || wordControl.sectionWords > 0) {
     logs = [...logs, `目录生效字数配置：最少 ${wordControl.minimumWords || '不限制'} 字，最多 ${wordControl.maximumWords || '不限制'} 字，每小节建议 ${wordControl.sectionWords || '不控制'} 字。`];
   }
-  logs = [...logs, '全文一致性审计为必做阶段，正文扩写完成后将使用 Agent 检查并修复事实冲突。'];
+  logs = [...logs, effectiveSkipPostStages
+    ? '本轮为勾选生成，正文完成后跳过字数校正与全文后处理（一致性审计、表格清理、格式自检）。'
+    : '全文一致性审计为必做阶段，正文扩写完成后将使用 Agent 检查并修复事实冲突。'];
   if (hasOriginalPlan) {
     logs = [...logs, `检测到已上传原方案：已读取完整原方案，交由 Agent 按语义还原。`];
   }
@@ -2161,7 +2166,7 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     return sections[item.id];
   }
 
-  // 只更新本轮目标；全文评分用于判定目标配图，其他节点的标记与时间保持原样。
+  // 名额按本轮生成范围（tasksToRun）结算，标记仅刷新本轮新编排目标（targets）；其他节点的标记与时间保持原样。
   function persistContentPlans(targets, generatedPlans) {
     const nextPlans = { ...storedContentPlans };
     for (const { item } of targets) {
@@ -2173,7 +2178,7 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         ...(originalMaterial ? { original_material: originalMaterial } : {}),
       }, tableRequirement);
     }
-    const imageScopeLeaves = effectiveTargetItemIds.length ? targets : leaves;
+    const imageScopeLeaves = effectiveTargetItemIds.length ? tasksToRun : leaves;
     const selectedImageIds = selectContentImageTargets(imageScopeLeaves, nextPlans, imageQuantity, Boolean(effectiveTargetItemIds.length));
     for (const { item } of targets) {
       const plan = { ...nextPlans[item.id].plan, image_needed: selectedImageIds.has(item.id) };
