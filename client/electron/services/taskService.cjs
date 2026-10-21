@@ -1482,7 +1482,7 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
               || !Object.hasOwn(technicalPlan.contentGenerationRuntime?.section_words || {}, item.id)));
       }
       if (!sectionRegeneration && !continuing && !taskPayload?.regenerate
-        && !taskPayload?.targetItemIds?.length
+        && !taskPayload?.targetItemIds?.length && !taskPayload?.postProcessOnly
         && technicalPlan.contentGenerationTask?.status === 'success'
         && !hasPendingSections(technicalPlan.outlineData?.outline || [])) {
         const task = technicalPlan.contentGenerationTask;

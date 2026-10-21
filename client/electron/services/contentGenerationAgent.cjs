@@ -513,7 +513,7 @@ ${planningHandoff ? '基础编排已由程序处理并保存：字数已校正�
 // 基础编排、正文与后处理共用一次主调用；暂停后仍从持久 Session 和已保存阶段恢复。
 async function runContentGenerationAgent({ agentService, aiService, generationOptions = {}, resume, hasKnowledgeBase, hasOriginalPlan, resolveOriginalImagePath,
   signal, planning, prepareGeneration, buildFiles, checkLayout, onLayoutProgress = () => {}, onCheckpoint = () => {}, onActivity, onProgress,
-  onWordAdjustProgress = () => {}, onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {}, failTask = () => {}, skipPostStages = false }) {
+  onWordAdjustProgress = () => {}, onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {}, failTask = () => {}, skipPostStages = false, postProcessOnly = false }) {
   const reuseSession = agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY);
   const persistent = reuseSession ? agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY) : null;
   const persistentState = persistent?.state || {};
@@ -610,6 +610,11 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   }
   const consistencyPrompt = workspaceDir => buildConsistencyPrompt(consistencyState, { hasKnowledgeBase, workspaceDir });
   const createAuditState = () => ({ status: 'extracting', extract_completed: 0, extract_total: 0, remaining_issues: [], failed_sections: [], summary: '', submission: null });
+  // 补跑入口：无正文生成阶段，直接从一致性审计进入，复用完整后处理链。
+  if (postProcessOnly && !consistencyState) {
+    consistencyState = createAuditState();
+    stage = 'auditing';
+  }
   // 小节并发核对是程序步骤：核对阶段按正文哈希复用未变化小节的结果；比对修复中恢复时只补缺失小节，不因修复改动重新核对。
   // 个别小节核对失败不中断审计，失败原因写入台账，由主 Agent 重新核对或自行核对。
   async function extractLedger(context) {
@@ -683,13 +688,13 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   }
   const runId = crypto.randomUUID();
   // 新一轮清空上一轮任务文件和程序清单；暂停继续与失败重试保留。
-  if (reuseSession && !resuming) clearTaskArtifacts(localContext.workspace_dir);
+  if (reuseSession && !resuming && !postProcessOnly) clearTaskArtifacts(localContext.workspace_dir);
   // 继续任务先清掉上次暂停或失败的错误，前置程序步骤失败时再如实记录。
   // 新一轮同时清除上一轮的阶段要求记录和待补压缩，避免误判为续跑。
   if (reuseSession) agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
     run_id: runId, status: 'running', phase: stage, agent_connection: 'running', error: null,
-    ...(!resuming ? { word_adjustment_started: false, word_adjust: null, consistency: null, table_cleanup: null, layout_check: null } : {}),
-    ...(!resuming && !continuingPlanning ? { prompted_stage: null, compaction_pending: null } : {}),
+    ...(!resuming && !postProcessOnly ? { word_adjustment_started: false, word_adjust: null, consistency: null, table_cleanup: null, layout_check: null } : {}),
+    ...(!resuming && !postProcessOnly && !continuingPlanning ? { prompted_stage: null, compaction_pending: null } : {}),
   });
   // 审计恢复先补齐小节核对，核对失败的小节随台账交给主 Agent。
   if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext);

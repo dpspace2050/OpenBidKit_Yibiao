@@ -1445,10 +1445,11 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     && ['sections-completed', 'word-converting', 'word-completed'].includes(contentRuntime.phase) && contentRuntime.html_output);
   const payloadTargetItemIds = Array.isArray(payload.targetItemIds)
     ? [...new Set(payload.targetItemIds.map((id) => String(id || '').trim()).filter(Boolean))] : [];
+  const postProcessOnly = !resume && !retryFailedSections && Boolean(payload.postProcessOnly);
   // 恢复条件用 continuing（resume 与 retryFailedSections 都算），防止勾选轮失败重试膨胀为全量并误入后处理。
-  const targetItemIds = continuing ? contentRuntime.target_item_ids : payloadTargetItemIds;
-  const skipPostStages = continuing ? contentRuntime.skip_post_stages : payloadTargetItemIds.length > 0;
-  const regenerate = !resume && !retryContentCorrection && !retryFailedSections && Boolean(payload.regenerate) && !targetItemIds.length;
+  const effectiveTargetItemIds = postProcessOnly ? [] : (continuing ? contentRuntime.target_item_ids : payloadTargetItemIds);
+  const effectiveSkipPostStages = postProcessOnly ? false : (continuing ? contentRuntime.skip_post_stages : payloadTargetItemIds.length > 0);
+  const regenerate = !resume && !retryContentCorrection && !retryFailedSections && Boolean(payload.regenerate) && !effectiveTargetItemIds.length;
   const targetItemId = resume || (retryFailedSections && (contentRuntime.html_output || continuingConsistency))
     ? contentRuntime.target_item_id : String(payload.targetItemId || '').trim();
   if (retryContentCorrection && targetItemId) {
@@ -1514,8 +1515,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   contentRuntime = normalizeContentGenerationRuntime({
     ...contentRuntime,
     target_item_id: targetItemId,
-    target_item_ids: targetItemIds,
-    skip_post_stages: skipPostStages,
+    target_item_ids: effectiveTargetItemIds,
+    skip_post_stages: effectiveSkipPostStages,
     regenerate_requirement: regenerateRequirement,
   });
   const completedStages = new Set(contentRuntime.completed_stages);
@@ -1563,8 +1564,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     tasksToRun = tasksToRun.filter(({ item }) => pendingIds.has(item.id));
   }
 
-  if (targetItemIds.length) {
-    const idSet = new Set(targetItemIds);
+  if (effectiveTargetItemIds.length) {
+    const idSet = new Set(effectiveTargetItemIds);
     // 新轮以全集为基准（支持勾选已 success 节重生成——tasksToRun 默认只含非 success 节，直接交集会空集抛错）；
     // 继续/重试轮与待生成清单取交集（限定 resume/retry 范围）。
     const base = continuing ? tasksToRun : leaves;
@@ -2172,8 +2173,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         ...(originalMaterial ? { original_material: originalMaterial } : {}),
       }, tableRequirement);
     }
-    const imageScopeLeaves = targetItemIds.length ? targets : leaves;
-    const selectedImageIds = selectContentImageTargets(imageScopeLeaves, nextPlans, imageQuantity, Boolean(targetItemIds.length));
+    const imageScopeLeaves = effectiveTargetItemIds.length ? targets : leaves;
+    const selectedImageIds = selectContentImageTargets(imageScopeLeaves, nextPlans, imageQuantity, Boolean(effectiveTargetItemIds.length));
     for (const { item } of targets) {
       const plan = { ...nextPlans[item.id].plan, image_needed: selectedImageIds.has(item.id) };
       nextPlans[item.id] = { ...nextPlans[item.id], plan, updated_at: now() };
@@ -2420,7 +2421,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
           failTask(error) {
             if (!controller.signal.aborted) controller.abort(error);
           },
-          skipPostStages,
+          skipPostStages: effectiveSkipPostStages,
+          postProcessOnly,
           async prepareGeneration(context) {
             if (hasOriginalPlan && !completedStages.has('restoring') && targets.some(({ item }) => !directGenerationIds.has(item.id))) {
               await restoreOriginalMaterialsIfNeeded(targets.filter(({ item }) => !directGenerationIds.has(item.id)), context);
@@ -2603,6 +2605,7 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
       contentStats.phase = 'word-completed';
       logs = [...logs, `转换完成，共 ${result.sections.length} 个 Word 文件。`, `输出目录：${contentRuntime.html_output.word_output_dir}`];
       const runtime = syncRuntime();
+      contentStats.post_process_completed = postProcessOnly || !effectiveSkipPostStages;
       checkpointTask({ status: 'success', logs, stats: statsSnapshot(), pause_requested: false }, {
         contentGenerationSections: sections,
         contentGenerationRuntime: runtime,
@@ -2643,8 +2646,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   }
 
   try {
-    if (continuingConsistency || continuingTableCleanup || continuingLayout) {
-      await runContentGeneration([]);
+    if (postProcessOnly || continuingConsistency || continuingTableCleanup || continuingLayout) {
+      await runContentGeneration(postProcessOnly ? leaves : []);
       return;
     }
     // 本轮已交付 HTML 后，暂停继续或失败重试直接续转 Word，不再启动 Agent。
