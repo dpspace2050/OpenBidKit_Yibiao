@@ -314,12 +314,15 @@ function ContentEditPage({
   // 任务成功且 Word 全部转换后展示整体完成信号，只改页面文案，不改变后端阶段和进度计算。
   const contentCompleted = htmlOutputProgress && task?.status === 'success' && currentProgressDetail?.phase === 'word-completed';
   const singleSectionCompleted = contentCompleted && currentProgressDetail?.mode === 'html-single';
-  const completedLabel = singleSectionCompleted ? '小节修改完成' : '全部完成';
+  const selectiveCompleted = contentCompleted && !singleSectionCompleted && completedCount < leaves.length;
+  const completedLabel = singleSectionCompleted ? '小节修改完成' : selectiveCompleted ? '本轮生成完成' : '全部完成';
   const completedImageCount = Object.values(contentStats?.workflow_progress?.steps['generating/0/images']?.items || {})
     .filter((item) => item.status === 'success').length;
   const completedDescription = singleSectionCompleted
     ? '小节修改完成，Word 已更新。'
-    : `正文生成全部完成：共 ${currentProgressDetail?.total || 0} 个小节，实际 ${contentStats?.generated_html_words || 0} 字${completedImageCount ? `，新增配图 ${completedImageCount} 张` : ''}，Word 已全部生成。`;
+    : selectiveCompleted
+      ? `本轮 ${currentProgressDetail?.total || 0} 个小节生成完成，全文 ${completedCount}/${leaves.length}。清空勾选后点击"继续生成正文"可生成剩余小节；全部完成后可运行全文检查与优化。`
+      : `正文生成全部完成：共 ${currentProgressDetail?.total || 0} 个小节，实际 ${contentStats?.generated_html_words || 0} 字${completedImageCount ? `，新增配图 ${completedImageCount} 张` : ''}，Word 已全部生成。`;
   const displayProgress = htmlOutputProgress ? task?.progress || 0 : currentProgressDetail ? currentProgressDetail.phase_progress : planning ? planningProgress : contentCorrecting ? contentCorrectionProgress : progress;
   const displayProgressLabel = contentCompleted ? completedLabel : currentProgressDetail ? currentProgressDetail.phase_label : planning ? '编排统计' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '生成统计';
   // 编辑类步骤按累计完成数展示，不以随分批派发增长的已派发数作分母。
