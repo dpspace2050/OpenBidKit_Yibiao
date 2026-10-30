@@ -22,6 +22,7 @@
 | D2 | 项目化范围 | **三域**：标书制作（technical-plan）、查重（duplicate-check）、废标检查（rejection-check）；可行性报告/知识库/资信库/商机维持全局 |
 | D3 | 项目命名 | 上传时**文件名即名**（去扩展名）；outline 阶段 AI 提取后自动更新（name_source=filename→ai）；手动改过（manual）不覆盖 |
 | D4 | 数据隔离架构 | **每项目独立 SQLite + 项目目录 + 全局注册表**（否决单库加 project_id 方案——上百条 SQL 逐条加过滤，漏一条即跨项目数据污染） |
+| D5 | 实施机制三项简化（2026-10-30 补） | ① **app 代理**：项目作用域 store 传 JS Proxy 包装的 app（只拦 `getPath('userData')` → 项目目录），paths.cjs 与 store 内部路径调用零改动，代价是项目目录多一层 `workspace/` 嵌套；② **agent 会话扁平前缀键** `<projectId>_<原taskKey>`，tasksRoot 隔离等价、piPersistentTaskStore 零改动；③ **IPC 缺省当前活跃项目**：main 维护 currentProjectId，三域 handler 内部路由，preload 签名与前端 143 个调用点零改动，事件/日志带 projectId。将来出现跨项目访问需求时再给个别通道追加可选 projectId 参数 |
 
 ### 附带结论
 
@@ -34,12 +35,15 @@ userData/
   workspace/
     yibiao.sqlite                  # 全局库：projects 注册表 + 知识库/资信/可行性报告/导出模板等全局域
     projects/
-      <projectId>/
+      <projectId>/                 # 项目根 = app 代理的 userData（D5①）
         project.sqlite             # 该项目三域全部业务表（库内保持单项目语义）
-        technical-plan/            # 原 workspace/technical-plan/ 整体搬入
-        duplicate-check/           # 原 workspace/duplicate-check/ 整体搬入
-        rejection-check/           # 原 workspace/rejection-check/ 整体搬入
-        assets/                    # 该项目图片资产（generated-images/imported-images/mermaid 缓存，见 §4.1）
+        workspace/
+          technical-plan/          # 原 workspace/technical-plan/ 整体搬入（多一层 workspace 系代理实现所致）
+          duplicate-check/
+          rejection-check/
+          generated-images/        # 图片资产含 mermaid-cache（§4.1）
+          imported-images/
+        agent-runtime/pi/tasks/    # 该项目 agent 会话（<projectId>_<taskKey> 扁平目录，D5②）
         logs/                      # 该项目三域流程日志（logs/ai 保持全局——AI 请求日志与模型配置同级）
 ```
 
@@ -123,7 +127,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 - 现状：会话按全局 TASK_KEY 存固定目录（agentService.cjs:690-747）；`primarySession` 全局单例（:176、:443-455）隐含互斥。
 - 改法：
-  - 会话存储路径加 `projects/<projectId>/` 前缀；`primarySession` 改为 **per-project 单例**（Map<projectId, session>）。Pi Runtime 本就是每任务一实例（:426-437），无需改；
+  - 会话按**扁平前缀键**隔离（D5②）：`taskKey = <projectId>_<原taskKey>`（safeTaskKey 兼容，目录天然分项目）；全域键（feasibility 等）不加前缀；`primarySession` 改为 **per-project 单例**（Map，全域键归 '' 槽）。Pi Runtime 本就是每任务一实例（:426-437），无需改；
   - **仅三域 TASK_KEY 项目化**——`FEASIBILITY_OUTLINE_AGENT_TASK_KEY` 等全域键保持原样（可研维持全局，不被前缀化、不搬进项目目录）；
   - `clearStalePiTaskArchives`（storageCleanupService.cjs:18-25、:46-55，每次启动执行）的静态保留名单 `PERSISTENT_AGENT_TASK_KEYS` 改为**动态生成**（projects 注册表 × 三域键 + 全域键）——键加项目前缀后静态名单全部失配，会每次启动把所有项目 agent 会话当垃圾清掉（评审B Issue 4）；
   - `pendingQuestions` 全局单队列（agentService.cjs:173-174、:274-279）双项目并发时弹窗无归属——payload 与 UI 增加项目标识。
@@ -136,9 +140,9 @@ CREATE TABLE IF NOT EXISTS projects (
 
 ## 6. IPC 面改造
 
-- 三域全部通道加 `projectId` 首参（通道名以 taskIpc.cjs 等 IPC 注册处的**具名清单**为准，如 `tasks:start-content-generation`——现状无统一 retry 通道，勿按通配名臆造）：`technicalPlan.loadState/saveX/clear/importTenderDocument`、`duplicateCheck.loadState/...`、`rejectionCheck.loadState/...`（shared/types/ipc.ts:582-859，其中 734/788/796 三个无参 loadState 是重点）。
-- **隐藏调用面一并纳入**（均持有三域 store 单例或直达任务面，评审B 建议3）：`checkResultExportService` 与 `duplicateCheckService`（ipc/index.cjs:302-308 捕获 store 单例）、`agentWorkspaceService` providers（agentWorkspaceService.cjs:135-237，`sendMessage` 直达 `taskService.startOutlineAdjustment`）、pluginContext 暴露给插件的 getTechnicalPlanState/getActiveTasks/onTaskEvent 等 API（pluginContext.cjs:68-106，语义定为"固定当前活跃项目"）、`technical-plan:preview-content-word`（technicalPlanIpc.cjs:17 → contentGenerationOutput.cjs:29 读 agent 会话）。
-- 渲染层改造面：约 143 个调用点、15 个文件（含 export-format/ExportFormatPage.tsx:619、developer 两页），实施计划按清单逐一加参。
+- **IPC 路由采用"缺省=当前活跃项目"（D5③）**：通道签名与 preload 不变，main 维护 currentProjectId，三域 handler 入口统一经 resolveStores() 路由到当前项目 store；resolve 入口统一打日志带 projectId。将来出现跨项目访问需求再给个别通道追加可选 projectId 参数（通道名以 taskIpc.cjs 等 IPC 注册处的**具名清单**为准，如 `tasks:start-content-generation`——现状无统一 retry 通道）。
+- **隐藏调用面一并路由**（均持有三域 store 单例或直达任务面，评审B 建议3）：`checkResultExportService` 与 `duplicateCheckService`（ipc/index.cjs:302-308 捕获 store 单例）、`agentWorkspaceService` providers（agentWorkspaceService.cjs:135-237，`sendMessage` 直达 `taskService.startOutlineAdjustment`）、pluginContext 暴露给插件的 API（pluginContext.cjs:68-106）、`technical-plan:preview-content-word`（technicalPlanIpc.cjs:17 → contentGenerationOutput.cjs:29 读 agent 会话）——全部改为经 resolveStores() 取当前项目实例。
+- 渲染层：三域既有 143 个调用点**零改动**；新增 projects.* API 与 active-changed 事件；切换项目通过 React key 重挂载工作区页面实现整体 rehydrate（切换期间 UI 禁用+加载态）。
 - preload API 签名同步改；renderer 维护 `currentProjectId`。
 - `tasks.onTaskEvent`（:833）事件带 projectId；renderer 只渲染当前项目任务，**其他项目有 active 任务时顶栏显示"⚡ N 个项目运行中"角标**，点击展开可切换。
 - 新增 `projects.*` 通道：`list / create / rename / delete / getActive / setActive`。
