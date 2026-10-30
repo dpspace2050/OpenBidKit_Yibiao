@@ -1139,6 +1139,8 @@ npm run build
 
 ---
 
+### Task 11: 前端基础设施（useProjects + 切换器 + key 重挂载）
+
 **Files:**
 - Create: `client/src/features/projects/useProjects.ts`
 - Create: `client/src/features/projects/ProjectSwitcher.tsx`
