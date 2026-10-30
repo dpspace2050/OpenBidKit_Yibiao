@@ -4,6 +4,7 @@ const path = require('node:path');
 const cheerio = require('cheerio');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { findHtmlStructureIssues, repairHtmlStructure, closeOpenTemplates, ownImages } = require('../utils/htmlStructure.cjs');
+const { projectTaskKey } = require('../utils/projectKeys.cjs');
 
 // 转换副本：结构完整的正文原样使用；有结构问题时按整本导出的规则修复副本（含补齐提示词结束标签），源 HTML 不回写。
 function convertibleHtml(html) {
@@ -25,8 +26,10 @@ function scanGeneratedSections(workspaceDir, targets) {
 }
 
 // 每次读取最新正文生成独立临时 Word；未完成的配图仅在预览副本中显示占位。
-async function previewContentSection({ sectionId, agentService, openXmlHelperService }) {
-  const workspaceDir = agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY)?.paths.workspaceDir;
+// projectId 缺省 null = 全域（无项目前缀，保持旧行为）；项目内预览传当前项目 ID 路由到项目 Agent 工作区。
+// 注意：agentService 必须是未绑定的全局服务（绑定上下文会再包一次前缀）。
+async function previewContentSection({ sectionId, agentService, openXmlHelperService, projectId = null }) {
+  const workspaceDir = agentService.loadPersistentTask(projectTaskKey(projectId, CONTENT_GENERATION_AGENT_TASK_KEY))?.paths.workspaceDir;
   if (!workspaceDir) return null;
   let body;
   try {

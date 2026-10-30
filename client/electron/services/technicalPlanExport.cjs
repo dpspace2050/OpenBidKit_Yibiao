@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const cheerio = require('cheerio');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
+const { projectTaskKey } = require('../utils/projectKeys.cjs');
 const { collectOutlineExportEntries, getPendingContentModeMessage, renderMarkdownForRestrictedHtml } = require('./exportService.cjs');
 const { findHtmlStructureIssues, repairHtmlStructure } = require('../utils/htmlStructure.cjs');
 
@@ -41,7 +42,10 @@ function aiSectionFile(item) {
 }
 
 /** 整本导出只读取当前目录、模板和 Agent 产物，不修改正文工作区。 */
-function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentService, openXmlHelperService }) {
+// projectId 缺省 null = 全域键（配合全局兜底 store/全局 agentService）；项目内导出传项目 ID。
+// 注意：agentService 若已是项目绑定上下文（任务内导出），键会自动加前缀，此时不要传 projectId 以免二次前缀。
+function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentService, openXmlHelperService, projectId = null }) {
+  const contentTaskKey = projectTaskKey(projectId, CONTENT_GENERATION_AGENT_TASK_KEY);
   return {
     /**
      * 保存对话框与转换使用同一次点击时的目录和模板。
@@ -52,7 +56,7 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       if (!state.outlineData?.outline?.length) throw new Error('没有可导出的目录内容');
       const template = exportFormat ? null : templateStore.getTemplate(state.exportTemplateId);
       if (!exportFormat && !template) throw new Error('请先到“长嘛样”选择有效的导出模板');
-      const task = agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+      const task = agentService.loadPersistentTask(contentTaskKey);
       return {
         project_name: state.outlineData.project_name,
         outline: state.outlineData.outline,

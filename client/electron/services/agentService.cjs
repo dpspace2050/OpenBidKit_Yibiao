@@ -20,6 +20,7 @@ const {
   loadPrimaryAgentSession,
   savePrimaryAgentSession,
 } = require('./pi/piPrimarySessionStore.cjs');
+const { projectTaskKey, parseProjectTaskKeyDirName } = require('../utils/projectKeys.cjs');
 
 const PI_RUNTIME_ID = 'pi';
 const PI_RUNTIME_NAME = 'Pi Agent';
@@ -172,7 +173,8 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
   let monitorFlushTimer = null;
   const pendingQuestions = new Map();
   let visibleQuestionId = '';
-  let latestPrimaryRequestSequence = 0;
+  // 主会话分槽：'' = 全域（feasibility/未接线前的三域），projectId = 项目槽；项目槽按需惰性恢复。
+  const primarySessions = new Map();
   let primarySession = loadPrimaryAgentSession(app);
   if (primarySession) {
     try {
@@ -188,6 +190,28 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
       primarySession = null;
       clearPrimaryAgentSession(app);
     }
+  }
+  // 主会话抢占序号按槽位独立计数：跨项目任务不应互相抢占对方项目的主会话。
+  const latestPrimaryRequestSequences = new Map();
+  function nextPrimaryRequestSequence(slotId) {
+    const next = (latestPrimaryRequestSequences.get(slotId) || 0) + 1;
+    latestPrimaryRequestSequences.set(slotId, next);
+    return next;
+  }
+  function isLatestPrimaryRequest(slotId, sequence) {
+    return latestPrimaryRequestSequences.get(slotId) === sequence;
+  }
+  // 显式 projectId 优先；否则从带项目前缀的任务键推导槽位（前缀键即 T5 的持久任务真实键）。
+  function resolvePrimarySessionSlotId(value = {}, explicitProjectId = '') {
+    const explicit = safeText(explicitProjectId);
+    if (explicit) return explicit;
+    const taskKey = safeText(value.task_key || value.taskKey || value.persistent_task?.task_key);
+    const parsed = taskKey ? parseProjectTaskKeyDirName(taskKey) : null;
+    return parsed?.projectId || '';
+  }
+  function getPrimarySessionSlot(slotId = '') {
+    if (!slotId) return primarySession;
+    return primarySessions.get(slotId) ?? null;
   }
   const pendingAssistantDeltas = new Map();
   const pendingToolUpdates = new Map();
@@ -330,6 +354,9 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
       recommended: index === 0,
       custom: option?.custom === true,
     }));
+    // 从发起任务携带的项目上下文取项目名，供提问面板区分多项目。
+    const sourceEntry = activeEntries.get(safeText(request.task_id));
+    const projectName = sourceEntry?.projectName || '';
     const question = {
       question_id: questionId,
       task_id: safeText(request.task_id),
@@ -338,7 +365,8 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
       question: safeText(request.question),
       options,
       asked_at: nowIso(),
-      is_primary: isPrimarySession(request),
+      is_primary: isPrimarySession(request, sourceEntry?.projectId || ''),
+      project_name: projectName || null,
     };
 
     return new Promise((resolve, reject) => {
@@ -349,6 +377,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
         signal,
         onAbort: null,
         autoConfirmationId: `agent-question:${questionId}`,
+        projectName: projectName || null,
       };
       entry.onAbort = () => {
         if (!pendingQuestions.has(questionId)) return;
@@ -440,22 +469,24 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     return serviceRuntime ? normalizeRuntimeStatus(serviceRuntime.getStatus()) : createStoppedStatus();
   }
 
-  function getPrimarySession() {
-    return primarySession ? { ...primarySession } : null;
+  function getPrimarySession(projectId = '') {
+    const slot = getPrimarySessionSlot(safeText(projectId));
+    return slot ? { ...slot } : null;
   }
 
-  function isPrimarySession(value = {}) {
-    if (!primarySession) return false;
+  function isPrimarySession(value = {}, projectId = '') {
+    const slot = getPrimarySessionSlot(resolvePrimarySessionSlotId(value, projectId));
+    if (!slot) return false;
     const taskId = safeText(value.task_id || value.taskId);
     const sessionId = safeText(value.session_id || value.sessionId);
     const taskKey = safeText(value.task_key || value.taskKey || value.persistent_task?.task_key);
-    if (sessionId && primarySession.session_id) return sessionId === primarySession.session_id;
-    if (taskId && primarySession.task_id) return taskId === primarySession.task_id;
-    return Boolean(taskKey && primarySession.task_key && taskKey === primarySession.task_key);
+    if (sessionId && slot.session_id) return sessionId === slot.session_id;
+    if (taskId && slot.task_id) return taskId === slot.task_id;
+    return Boolean(taskKey && slot.task_key && taskKey === slot.task_key);
   }
 
-  function emitPrimarySessionChanged() {
-    const value = getPrimarySession();
+  function emitPrimarySessionChanged(projectId = '') {
+    const value = getPrimarySession(projectId);
     primarySessionListeners.forEach((listener) => {
       try { listener(value); } catch {}
     });
@@ -469,18 +500,57 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     emitStatus();
   }
 
-  function setPrimarySession(value = {}) {
-    primarySession = savePrimaryAgentSession(app, value);
-    emitPrimarySessionChanged();
-    return getPrimarySession();
+  function setPrimarySession(value = {}, projectId = '') {
+    const slotId = safeText(projectId);
+    const normalized = savePrimaryAgentSession(app, value, slotId || undefined);
+    if (slotId) {
+      if (normalized) primarySessions.set(slotId, normalized);
+      else primarySessions.delete(slotId);
+    } else {
+      primarySession = normalized;
+    }
+    emitPrimarySessionChanged(slotId);
+    return getPrimarySession(slotId);
   }
 
-  function clearPrimarySessionIfMatches(value = {}) {
-    if (!isPrimarySession(value)) return false;
-    primarySession = null;
-    clearPrimaryAgentSession(app);
-    emitPrimarySessionChanged();
+  function clearPrimarySessionIfMatches(value = {}, projectId = '') {
+    const slotId = resolvePrimarySessionSlotId(value, projectId);
+    if (!isPrimarySession(value, slotId)) return false;
+    if (slotId) primarySessions.delete(slotId);
+    else primarySession = null;
+    clearPrimaryAgentSession(app, slotId || undefined);
+    emitPrimarySessionChanged(slotId);
     return true;
+  }
+
+  // 项目槽主会话惰性恢复（T9 的 onProjectOpened 调用）；会话文件丢失时清空该槽。
+  function restorePrimarySessionForProject(projectId) {
+    const slotId = safeText(projectId);
+    if (!slotId) return null;
+    if (primarySessions.has(slotId)) return getPrimarySession(slotId);
+    let session = null;
+    try {
+      session = loadPrimaryAgentSession(app, slotId);
+    } catch {
+      session = null;
+    }
+    if (session) {
+      try {
+        const persistentTask = session.task_key
+          ? loadPersistentAgentTask(app, session.task_key)
+          : null;
+        const sessionFile = persistentTask?.state?.session_file;
+        if (!sessionFile || !fs.existsSync(getPersistentAgentSessionPath(app, session.task_key, sessionFile))) {
+          session = null;
+          clearPrimaryAgentSession(app, slotId);
+        }
+      } catch {
+        session = null;
+        clearPrimaryAgentSession(app, slotId);
+      }
+    }
+    if (session) primarySessions.set(slotId, session);
+    return session ? { ...session } : null;
   }
 
   function getEntryActiveTask(entry) {
@@ -510,7 +580,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
         task_id: entry.taskId,
         session_id: activeTask.session_id || entry.sessionId,
         task_key: entry.taskKey,
-      }),
+      }, entry.projectId),
     };
   }
 
@@ -611,16 +681,20 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     const taskId = payload.task_id || crypto.randomUUID();
     const title = payload.title || '易标智能体任务';
     const taskKey = safeText(payload.persistent_task?.task_key);
+    const projectId = safeText(payload.project_id || payload.projectId);
+    const projectName = payload.project_name == null ? '' : safeText(payload.project_name);
     const entry = {
       taskId,
       taskKey,
       title,
+      projectId,
+      projectName,
       createdAt: nowIso(),
       startedAt: nowIso(),
       sessionId: '',
       workspaceDir: '',
       primaryRequested: payload.primary_session === true,
-      primaryRequestSequence: payload.primary_session === true ? ++latestPrimaryRequestSequence : 0,
+      primaryRequestSequence: payload.primary_session === true ? nextPrimaryRequestSequence(projectId) : 0,
       payload: { ...payload, task_id: taskId },
       userTaskContextProvider,
       runtime: null,
@@ -638,12 +712,12 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
         entry.sessionId = safeText(sessionInfo.session_id);
         entry.workspaceDir = safeText(sessionInfo.workspace_dir);
         try { originalOnSessionStarted?.(sessionInfo); } catch {}
-        if (entry.primaryRequested && entry.primaryRequestSequence === latestPrimaryRequestSequence) {
+        if (entry.primaryRequested && isLatestPrimaryRequest(entry.projectId, entry.primaryRequestSequence)) {
           setPrimarySession({
             task_id: taskId,
             task_key: taskKey,
             session_id: entry.sessionId,
-          });
+          }, entry.projectId);
         } else {
           emitStatus();
         }
@@ -693,7 +767,9 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
 
   function deletePersistentTask(taskKey) {
     deletePersistentAgentTask(app, taskKey);
-    clearPrimarySessionIfMatches({ task_key: taskKey });
+    // 带项目前缀的键按前缀定位对应项目的主会话槽，避免误清其他项目。
+    const parsed = parseProjectTaskKeyDirName(String(taskKey || ''));
+    clearPrimarySessionIfMatches({ task_key: taskKey }, parsed?.projectId || '');
   }
 
   function updatePersistentTask(taskKey, partial) {
@@ -751,10 +827,15 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
   }
 
   // 为后台父任务绑定最新诊断上下文和统一 AI 队列作用域。
+  // project_id 存在时持久任务键自动加项目前缀（T5 按前缀路由进项目目录），
+  // 任务模块无需感知项目即可读写正确的项目内 Agent 会话；feasibility/全域（project_id 空）保持原键。
   function bindTaskContext(userTaskContextProvider, options = {}) {
     const queueScopeId = safeText(options.queueScopeId || options.queue_scope_id);
     const signal = options.signal;
     const primarySessionRequested = options.primary_session === true;
+    const projectId = safeText(options.project_id || options.projectId) || null;
+    const projectName = options.project_name ?? null;
+    const scopedTaskKey = (taskKey) => (projectId ? projectTaskKey(projectId, taskKey) : taskKey);
     return {
       runTask: (payload = {}) => {
         const taskSignal = signal && payload.signal
@@ -762,20 +843,25 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
           : payload.signal || signal;
         return startTask({
           ...payload,
+          ...(projectId && !payload.project_id ? { project_id: projectId } : {}),
+          ...(projectId && projectName != null && payload.project_name == null ? { project_name: projectName } : {}),
           ...(queueScopeId && !payload.queueScopeId && !payload.queue_scope_id ? { queue_scope_id: queueScopeId } : {}),
           // 子任务可以显式拒绝继承主会话身份，队列和取消作用域仍照常继承。
           primary_session: payload.primary_session ?? primarySessionRequested,
+          ...(projectId && payload.persistent_task?.task_key
+            ? { persistent_task: { ...payload.persistent_task, task_key: scopedTaskKey(payload.persistent_task.task_key) } }
+            : {}),
           ...(taskSignal ? { signal: taskSignal } : {}),
         }, userTaskContextProvider);
       },
       getStatus,
-      hasPersistentTaskSession,
-      loadPersistentTask,
-      updatePersistentTask,
-      deletePersistentTask,
-      forkPersistentTask,
-      getPrimarySession,
-      isPrimarySession,
+      hasPersistentTaskSession: (taskKey) => hasPersistentTaskSession(scopedTaskKey(taskKey)),
+      loadPersistentTask: (taskKey) => loadPersistentTask(scopedTaskKey(taskKey)),
+      updatePersistentTask: (taskKey, partial) => updatePersistentTask(scopedTaskKey(taskKey), partial),
+      deletePersistentTask: (taskKey) => deletePersistentTask(scopedTaskKey(taskKey)),
+      forkPersistentTask: (sourceTaskKey, targetTaskKey, state) => forkPersistentTask(scopedTaskKey(sourceTaskKey), scopedTaskKey(targetTaskKey), state),
+      getPrimarySession: () => getPrimarySession(projectId || ''),
+      isPrimarySession: (value) => isPrimarySession(value, projectId || ''),
     };
   }
 
@@ -894,6 +980,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     onQuestion,
     getPrimarySession,
     isPrimarySession,
+    restorePrimarySessionForProject,
     onPrimarySessionChanged,
     exportSelfCheckReport,
     close,

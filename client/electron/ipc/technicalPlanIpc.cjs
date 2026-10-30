@@ -14,7 +14,12 @@ function registerTechnicalPlanIpc({ technicalPlanStore, taskService, agentServic
   ipcMain.handle('technical-plan:select-bid-section', (_event, selectedSection) => technicalPlanStore.selectBidSection(selectedSection));
   ipcMain.handle('technical-plan:read-tender-markdown', () => technicalPlanStore.readTenderMarkdown());
   ipcMain.handle('technical-plan:read-content-word', (_event, sectionId) => technicalPlanStore.readContentWord(sectionId));
-  ipcMain.handle('technical-plan:preview-content-word', (_event, sectionId) => previewContentSection({ sectionId, agentService, openXmlHelperService }));
+  ipcMain.handle('technical-plan:preview-content-word', (_event, sectionId) => previewContentSection({
+    sectionId,
+    agentService,
+    openXmlHelperService,
+    projectId: taskService.getCurrentProjectId?.() || null,
+  }));
   ipcMain.handle('technical-plan:read-tender-source-markdown', (_event, sourceId) => technicalPlanStore.readTenderSourceMarkdown(sourceId));
   ipcMain.handle('technical-plan:update-step', (_event, step) => technicalPlanStore.updateStep(step));
   ipcMain.handle('technical-plan:save-bid-analysis-config', (_event, payload) => technicalPlanStore.saveBidAnalysisConfig(payload));

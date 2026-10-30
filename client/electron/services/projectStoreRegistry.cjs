@@ -45,7 +45,8 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
     ensureProjectSchemaHealth(db);
     const projectApp = createProjectAppProxy(app, projectDir);
     const { fileService, agentService, taskLogStore, configStore } = deps;
-    const technicalPlanStore = createTechnicalPlanStore({ app: projectApp, db, fileService, agentService, taskLogStore, configStore });
+    // technicalPlanStore 需感知 projectId：store 内部清理 Agent 持久会话时按项目前缀键路由
+    const technicalPlanStore = createTechnicalPlanStore({ app: projectApp, db, fileService, agentService, taskLogStore, configStore, projectId });
     const duplicateCheckStore = createDuplicateCheckStore({ app: projectApp, db, taskLogStore });
     const rejectionCheckStore = createRejectionCheckStore({ app: projectApp, db, fileService, technicalPlanStore, taskLogStore });
     return { projectId, db, projectApp, technicalPlanStore, duplicateCheckStore, rejectionCheckStore, refCount: 0, lastUsed: ++seq };
@@ -90,6 +91,10 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
     if (currentProjectId) registry.touch(currentProjectId);
   }
   function getCurrentProjectId() { return currentProjectId; }
+  // 项目名供任务提问面板等展示用（agentService 不直接依赖 registry，经调用侧传入）
+  function getProjectName(projectId) {
+    return registry.get(projectId)?.name || null;
+  }
   function getOpenErrors() { return Object.fromEntries(openErrors); }
   function openProjectIds() { return [...contexts.keys()]; }
   // 删除项目前必须先关它的连接（Windows 下句柄打开中 rmSync 必 EBUSY——审计B Issue 2）
@@ -101,7 +106,7 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
   }
   function closeAll() { for (const ctx of contexts.values()) { try { ctx.db.close(); } catch (_) {} } contexts.clear(); }
 
-  return { getContext, acquire, resolveStores, setCurrent, getCurrentProjectId, getOpenErrors, closeProject, openProjectIds, closeAll, createProjectAppProxy };
+  return { getContext, acquire, resolveStores, setCurrent, getCurrentProjectId, getProjectName, getOpenErrors, closeProject, openProjectIds, closeAll, createProjectAppProxy };
 }
 
 module.exports = { createProjectStoreRegistry, createProjectAppProxy };

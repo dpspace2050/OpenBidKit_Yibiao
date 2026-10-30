@@ -28,6 +28,7 @@ const { GLOBAL_FACTS_AGENT_TASK_KEY } = require('./globalFactsAgentV2Config.cjs'
 const { ORIGINAL_RESTORATION_AGENT_TASK_KEY } = require('./originalPlanRestorationAgentConfig.cjs');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { originalImageReferences } = require('./originalPlanRestoration.cjs');
+const { projectTaskKey } = require('../utils/projectKeys.cjs');
 
 const tenderMarkdownRelativePath = path.join('technical-plan', 'tender.md').replace(/\\/g, '/');
 const tenderOriginalMarkdownRelativePath = path.join('technical-plan', 'tender-original.md').replace(/\\/g, '/');
@@ -464,15 +465,17 @@ function mapOutlineItems(items, mapper) {
   });
 }
 
-function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogStore, configStore }) {
+function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogStore, configStore, projectId = null }) {
+  // 项目内 store 清理 Agent 持久会话时用项目前缀键；全局兜底 store（projectId 空）保持原键。
+  const agentTaskKey = (taskKey) => projectTaskKey(projectId, taskKey);
   function deleteOutlineAgentTask() {
-    agentService.deletePersistentTask(OUTLINE_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(TEMPLATE_EXTRACTION_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+    agentService.deletePersistentTask(agentTaskKey(OUTLINE_AGENT_TASK_KEY));
+    agentService.deletePersistentTask(agentTaskKey(TEMPLATE_EXTRACTION_AGENT_TASK_KEY));
+    agentService.deletePersistentTask(agentTaskKey(ORIGINAL_RESTORATION_AGENT_TASK_KEY));
+    agentService.deletePersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY));
   }
   function deleteGlobalFactsAgentTask() {
-    agentService.deletePersistentTask(GLOBAL_FACTS_AGENT_TASK_KEY);
+    agentService.deletePersistentTask(agentTaskKey(GLOBAL_FACTS_AGENT_TASK_KEY));
   }
   let agentWorkspaceChangeListener = null;
   let lastAgentWorkspaceSignal = null;
@@ -1643,8 +1646,8 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
 
   function clearContentGenerationState(wordChanges) {
     stageContentWordRemoval(wordChanges);
-    agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+    agentService.deletePersistentTask(agentTaskKey(ORIGINAL_RESTORATION_AGENT_TASK_KEY));
+    agentService.deletePersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY));
     db.prepare("UPDATE technical_plan_outline_nodes SET content = '', updated_at = ?").run(now());
     db.prepare('DELETE FROM technical_plan_content_sections').run();
     db.prepare('DELETE FROM technical_plan_content_plans').run();
@@ -1803,7 +1806,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     const removed = Object.keys(snapshot.nodes).filter(id => nextIds.has(id) && affectedIds.has(id));
     stageContentWordRemoval(changes, removed);
     if (removed.length) {
-      const workspaceDir = agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY)?.paths.workspaceDir;
+      const workspaceDir = agentService.loadPersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY))?.paths.workspaceDir;
       if (workspaceDir) {
         for (const id of removed) stageContentFileRemoval(changes, path.join(workspaceDir, '正文', `${encodeURIComponent(id)}.html`));
       }
@@ -2172,8 +2175,8 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     });
     transaction();
     if (invalidatesContentTask) {
-      agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
-      if (clearAll) agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+      agentService.deletePersistentTask(agentTaskKey(ORIGINAL_RESTORATION_AGENT_TASK_KEY));
+      if (clearAll) agentService.deletePersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY));
       cleanupOriginalImageBatches();
     }
     const savedContentRuntime = safeJsonParse(readMetaRow().content_generation_runtime_json, undefined);
@@ -2497,8 +2500,8 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
         });
       });
       transaction();
-      agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
-      agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+      agentService.deletePersistentTask(agentTaskKey(ORIGINAL_RESTORATION_AGENT_TASK_KEY));
+      agentService.deletePersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY));
       cleanupOriginalImageBatches();
       return {
         success: true,
@@ -2533,8 +2536,8 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     if (fs.existsSync(filePath)) {
       fs.rmSync(filePath, { force: true });
     }
-    agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
+    agentService.deletePersistentTask(agentTaskKey(ORIGINAL_RESTORATION_AGENT_TASK_KEY));
+    agentService.deletePersistentTask(agentTaskKey(CONTENT_GENERATION_AGENT_TASK_KEY));
     cleanupOriginalImageBatches();
     return { success: true, message: '已移除原方案' };
   }
