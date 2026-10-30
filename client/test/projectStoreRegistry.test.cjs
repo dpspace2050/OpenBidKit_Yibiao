@@ -41,3 +41,17 @@ test('resolveStores 缺省当前项目；无项目时抛错', () => {
   assert.equal(reg.getCurrentProjectId(), '20261030-a1b2c3');
   assert.ok(reg.resolveStores().technicalPlanStore);
 });
+
+test('LRU 池满且全被钉住时，新项目不自淘汰', () => {
+  const { app, registry, deps } = makeFakeEnv();
+  const reg = createProjectStoreRegistry({ app, registry, deps, maxOpenProjects: 2 });
+  for (const id of ['20261030-a1b2c3', '20261031-b2c3d4', '20261032-c3d4e5']) registry.create({ id, name: id });
+  const rA = reg.acquire('20261030-a1b2c3');
+  const rB = reg.acquire('20261031-b2c3d4');
+  const storesC = reg.resolveStores('20261032-c3d4e5'); // 第 3 个，池满且 A/B 被钉住
+  assert.ok(storesC.technicalPlanStore);
+  assert.ok(reg.openProjectIds().includes('20261032-c3d4e5'));
+  assert.ok(reg.openProjectIds().includes('20261030-a1b2c3')); // 钉住的不淘汰
+  assert.ok(reg.openProjectIds().includes('20261031-b2c3d4'));
+  rA(); rB();
+});

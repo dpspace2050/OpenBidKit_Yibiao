@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { getProjectsRootDir } = require('../utils/paths.cjs');
-const { ensureProjectSchemaHealth, THREE_DOMAIN_TABLES } = require('./sqliteDatabase.cjs');
+const { ensureProjectSchemaHealth } = require('./sqliteDatabase.cjs');
 const { createTechnicalPlanStore } = require('./technicalPlanStore.cjs');
 const { createDuplicateCheckStore } = require('./duplicateCheckStore.cjs');
 const { createRejectionCheckStore } = require('./rejectionCheckStore.cjs');
@@ -62,16 +62,16 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
         throw Object.assign(new Error(`项目打开失败: ${openErrors.get(projectId)}`), { code: 'PROJECT_OPEN_FAILED', projectId });
       }
       contexts.set(projectId, ctx);
-      evictIfNeeded();
+      evictIfNeeded(projectId); // 新建 ctx 排除在本轮淘汰候选外——池满且其余全被钉住时不能把自己淘汰成僵尸连接
       try { onProjectOpened?.(projectId, storesOf(ctx)); } catch (error) { console.warn('[project-registry] 项目打开回调失败', error); }
     }
     ctx.lastUsed = ++seq;
     return ctx;
   }
 
-  function evictIfNeeded() {
+  function evictIfNeeded(excludeProjectId) {
     if (contexts.size <= maxOpenProjects) return;
-    const evictable = [...contexts.values()].filter((c) => c.refCount === 0).sort((a, b) => a.lastUsed - b.lastUsed);
+    const evictable = [...contexts.values()].filter((c) => c.refCount === 0 && c.projectId !== excludeProjectId).sort((a, b) => a.lastUsed - b.lastUsed);
     while (contexts.size > maxOpenProjects && evictable.length) {
       const ctx = evictable.shift();
       contexts.delete(ctx.projectId);
