@@ -39,6 +39,7 @@ userData/
         technical-plan/            # 原 workspace/technical-plan/ 整体搬入
         duplicate-check/           # 原 workspace/duplicate-check/ 整体搬入
         rejection-check/           # 原 workspace/rejection-check/ 整体搬入
+        assets/                    # 该项目图片资产（generated-images/imported-images/mermaid 缓存，见 §4.1）
         logs/                      # 该项目三域流程日志（logs/ai 保持全局——AI 请求日志与模型配置同级）
 ```
 
@@ -82,6 +83,19 @@ CREATE TABLE IF NOT EXISTS projects (
 |---|---|---|
 | agent 持久任务/会话数据 | pi environment 的 tasksRoot（userData 下固定目录，**在 workspace 外**，见 piPersistentTaskStore.cjs:20-30） | 迁入项目目录（§5.3 的前缀改造后自然落在项目内）；存量归 default 项目 |
 | 三域流程日志 | `userData/logs/<module>`（paths.cjs:128-137，getDeveloperLogsDir） | technical-plan / duplicate-check / rejection-check 三模块日志改按项目路由；logs/ai 保持全局 |
+| 图片资产（AI 生图/导入图/mermaid 缓存） | 全局 `workspace/generated-images/`、`workspace/imported-images/`、mermaid 缓存 | 三域相关资产迁入项目 `assets/`（见 §4.1） |
+
+### 4.1 图片/资源资产项目化（评审B Issue 1，不做会跨项目删图）
+
+图片资产目前是全局目录，且被启动清理/级联清空按全局处理，不项目化的后果：项目 A 重置会删项目 B 的图片（markdown 引用悬空）；**升级后首轮启动会把所有项目生图删光**（三域表从全局库 DROP → 健康检查重建空表 → 孤儿清理判定全部生图无引用）。
+
+| 落点 | 改法 |
+|---|---|
+| 目录 | `generated-images/technical-plan`、`imported-images` 的 technical-plan 批次、mermaid 缓存（mermaidCache.cjs:30-41）→ 项目 `assets/` 下；查重/废标自有资产同样归项目 |
+| 协议 | `yibiao-asset://` 三处处理器（main.cjs:265、exportService.cjs:1537、duplicateCheckService.cjs:2088）改按项目资产根解析 |
+| 启动清理 | `clearOrphanedGeneratedImages`（storageCleanupService.cjs:57-97）改为逐项目打开项目库算引用集，按各项目资产根清理 |
+| 级联清空 | `clearTechnicalPlanMermaidCache`、`cleanupOriginalImageBatches`（technicalPlanStore.cjs:2440-2458）、`deleteImportedImageBatches(app,'technical-plan')`（:2628-2630，现按前缀匹配全局根）——store 项目化后路径落在项目内，作用域自动收敛 |
+| schema 健康检查 | `schemaHealthTableGroups`/`columnGroups`（sqliteDatabase.cjs:1237-1267）拆**全局库组 / 项目库组**两套——防止三域表 DROP 后健康检查在全局库重建空表 |
 
 ## 5. 运行时改造（并行核心）
 
@@ -89,8 +103,10 @@ CREATE TABLE IF NOT EXISTS projects (
 
 - 现状：`ipc/index.cjs:285-326` 启动时创建共享 `db` 注入各 store。
 - 改法：新增 `projectStoreRegistry`（主进程）：
-  - `getProjectContext(projectId)` → 惰性打开 `projects/<id>/project.sqlite`（better-sqlite3），打开时跑迁移到当前 schema 版本，LRU 缓存（上限 8 个连接，淘汰最近最少使用；运行中任务持有的连接不淘汰）；
-  - 三域 store 改为按 `projectContext` 构造（或 store 方法增加 projectId 入参，实施计划定夺，原则：**不共享跨项目的 db 句柄**）；
+  - `getProjectContext(projectId)` → 惰性打开 `projects/<id>/project.sqlite`（better-sqlite3），打开时跑迁移到当前 schema 版本，LRU 缓存（上限 8 个连接）；
+  - **淘汰保护用引用计数**：任务起止、三域 IPC handler 入口/出口各 ±1，计数 >0 的连接不淘汰——"运行中任务持有"不足以覆盖 importTenderDocument 解析 await 后回调写库这类非任务异步流；被淘汰后再次访问即重开（store 内联 `db.prepare`、无语句缓存，lazy 重开可行）；
+  - **写死结论：三域 store 按项目实例化**（每项目一套 store 实例，随连接创建/销毁）。technicalPlanStore 的路径常量在构造期解析（technicalPlanStore.cjs:500-509），"方法加 projectId 入参"方案对该 store 不可行；
+  - 惰性打开兼做**中断恢复入口**：`recoverInterrupted*`（现于 taskService 构造期对单一 store 执行，taskService.cjs:1357-1370）改为 getProjectContext 首次打开该项目时执行——outline 恢复会自动重启任务（:1028-1039），语义变为"用户打开该项目时恢复"；
   - 全局域 store 继续用全局 db，不受影响。
 
 ### 5.2 任务注册表与锁
@@ -100,21 +116,29 @@ CREATE TABLE IF NOT EXISTS projects (
   - 内存键 `type` → `${projectId}:${type}`；
   - `taskDefinitions`（:30-175）的 `lockPolicy: 'group-exclusive'` 语义改为**项目内 group 互斥、跨项目放行**；
   - 落库的任务状态（原 `technical_plan_tasks` 按 type 一条）改按 `(project_id, type)` 唯一——项目库内表结构可保持按 type 主键（库即项目，天然成立），跨项目互不覆盖；
-  - 所有任务事件（checkpoint、进度、完成/失败）payload 增加 `projectId`。
+  - 所有任务事件（checkpoint、进度、完成/失败）payload 增加 `projectId`，含 `TaskEvent` 类型定义（shared/types/ipc.ts:36、:833）；
+  - renderer 事件过滤必须覆盖 `subscribe()` 的**全量重放帧**（taskService.cjs:522-530 重放所有任务快照）——只过滤增量事件会漏。
 
 ### 5.3 agent 会话
 
 - 现状：会话按全局 TASK_KEY 存固定目录（agentService.cjs:690-747）；`primarySession` 全局单例（:176、:443-455）隐含互斥。
-- 改法：会话存储路径加 `projects/<projectId>/` 前缀；`primarySession` 改为 **per-project 单例**（Map<projectId, session>）。Pi Runtime 本就是每任务一实例（:426-437），无需改。
+- 改法：
+  - 会话存储路径加 `projects/<projectId>/` 前缀；`primarySession` 改为 **per-project 单例**（Map<projectId, session>）。Pi Runtime 本就是每任务一实例（:426-437），无需改；
+  - **仅三域 TASK_KEY 项目化**——`FEASIBILITY_OUTLINE_AGENT_TASK_KEY` 等全域键保持原样（可研维持全局，不被前缀化、不搬进项目目录）；
+  - `clearStalePiTaskArchives`（storageCleanupService.cjs:18-25、:46-55，每次启动执行）的静态保留名单 `PERSISTENT_AGENT_TASK_KEYS` 改为**动态生成**（projects 注册表 × 三域键 + 全域键）——键加项目前缀后静态名单全部失配，会每次启动把所有项目 agent 会话当垃圾清掉（评审B Issue 4）；
+  - `pendingQuestions` 全局单队列（agentService.cjs:173-174、:274-279）双项目并发时弹窗无归属——payload 与 UI 增加项目标识。
 
 ### 5.4 AI 队列
 
-- 现状：全局队列 concurrency_limit=10，按 `queueScopeId` 分作用域，支持 pause/resumeScope（aiService.cjs:2458-2552、2574-2596）。
-- 改法：`queueScopeId` 统一用 projectId——每项目独立暂停/恢复作用域，10 并发全局共享（两项目同时生成各自排队，公平竞争）。**不改并发上限**。
+- 现状：全局队列 concurrency_limit=10，按 `queueScopeId` 分作用域，支持 pause/resumeScope（aiService.cjs:2458-2552、:2574-2596）。**现有 scope 是任务级**：`queueScopeId = ${type}:${task_id}`（taskService.cjs:682），任务暂停走 `pauseQueueScope(control.queueScopeId)`（:1519-1521），任务结束 `finally` 自动 resume（:897-899）。
+- 改法：scope 改**分层键** `${projectId}:${type}:${task_id}`——保留任务级暂停语义。⚠️ 禁止扁平化为 projectId（评审A/B 共同确认的回归）：扁平化后暂停 A 任务会打死同项目并行任务排队的请求（pauseScope 会清空该 scope 排队/重试中的请求并拒绝后续入队，aiRequestQueue.cjs:165-191）；任一任务结束的自动 resume 会误解除另一任务的暂停。
+- **不做"按项目暂停"**：D1 是切走不暂停，项目级 scope 无消费方。10 并发全局共享不变（两项目同时生成各自排队，公平竞争），**不改并发上限**。
 
 ## 6. IPC 面改造
 
-- 三域全部通道加 `projectId` 首参：`technicalPlan.loadState/saveX/clear/importTenderDocument`、`tasks.start/pause/resume/retry`、`duplicateCheck.loadState/...`、`rejectionCheck.loadState/...`（通道清单见 shared/types/ipc.ts:582-859，其中 734/788/796 三个无参 loadState 是重点）。
+- 三域全部通道加 `projectId` 首参（通道名以 taskIpc.cjs 等 IPC 注册处的**具名清单**为准，如 `tasks:start-content-generation`——现状无统一 retry 通道，勿按通配名臆造）：`technicalPlan.loadState/saveX/clear/importTenderDocument`、`duplicateCheck.loadState/...`、`rejectionCheck.loadState/...`（shared/types/ipc.ts:582-859，其中 734/788/796 三个无参 loadState 是重点）。
+- **隐藏调用面一并纳入**（均持有三域 store 单例或直达任务面，评审B 建议3）：`checkResultExportService` 与 `duplicateCheckService`（ipc/index.cjs:302-308 捕获 store 单例）、`agentWorkspaceService` providers（agentWorkspaceService.cjs:135-237，`sendMessage` 直达 `taskService.startOutlineAdjustment`）、pluginContext 暴露给插件的 getTechnicalPlanState/getActiveTasks/onTaskEvent 等 API（pluginContext.cjs:68-106，语义定为"固定当前活跃项目"）、`technical-plan:preview-content-word`（technicalPlanIpc.cjs:17 → contentGenerationOutput.cjs:29 读 agent 会话）。
+- 渲染层改造面：约 143 个调用点、15 个文件（含 export-format/ExportFormatPage.tsx:619、developer 两页），实施计划按清单逐一加参。
 - preload API 签名同步改；renderer 维护 `currentProjectId`。
 - `tasks.onTaskEvent`（:833）事件带 projectId；renderer 只渲染当前项目任务，**其他项目有 active 任务时顶栏显示"⚡ N 个项目运行中"角标**，点击展开可切换。
 - 新增 `projects.*` 通道：`list / create / rename / delete / getActive / setActive`。
@@ -123,12 +147,13 @@ CREATE TABLE IF NOT EXISTS projects (
 
 启动时检测（`ensureWorkspaceSchemaHealth` 之后）：
 
-1. 条件：全局库存在 `technical_plan_meta` 有数据 且 `projects` 表为空；
-2. 建 default 项目（name 取 `outline_project_name`，无则"导入的项目"；name_source=ai）；
-3. **先备份**（复用 `backupDatabaseFiles` 机制，sqliteDatabase.cjs）；
-4. 事务内：三域全表复制到 `projects/<defaultId>/project.sqlite`；工作区三域目录、存量 agent 会话（tasksRoot）及三域模块日志目录一并移入 default 项目目录；
-5. 全局库 DROP 三域表 + 清除对应迁移步骤记录；
-6. 失败处理：任一步失败 → 回滚目录移动 + 全局库恢复备份 + 启动标错（不许半迁移状态静默存在）。
+1. 条件：全局库存在 `technical_plan_meta` 有数据 且 `projects` 表无 active/migrating 记录；
+2. 建 default 项目（name 取 `outline_project_name`，无则"导入的项目"；name_source=ai），registry 行以 **status=migrating** 落库（journal）；
+3. **先备份**（复用 `backupDatabaseFiles` 机制，sqliteDatabase.cjs；从备份还原前先 close 全局库连接再复制回）；
+4. 事务内：三域全表复制到 `projects/<defaultId>/project.sqlite`；
+5. 目录移动：工作区三域目录、图片资产（§4.1）、存量 agent 会话（tasksRoot 三域部分）、三域模块日志 → default 项目目录；
+6. 全局库 DROP 三域表 + 清除对应迁移步骤记录；registry 行置 status=active（journal 完成）；
+7. **崩溃恢复（对断电/强杀设防，评审B Issue 3）**：文件移动不在 SQLite 事务内，存在危险窗口（表已复制目录未移 / 目录已移表未 DROP）。启动时发现 status=migrating → 按分步清单**幂等续跑**（每步先查目标态再执行），续跑失败则从备份还原并标错。禁止"projects 非空即跳过"——半迁移状态必须由 journal 识别，不许静默存在。
 
 ## 8. 前端改造
 
@@ -140,10 +165,10 @@ CREATE TABLE IF NOT EXISTS projects (
 
 ## 9. 上传 / 命名 / 生命周期
 
-- **新建项目**：选文件 → 立即写 registry（name=首份文件名去扩展名）→ 建项目库+目录 → 原件复制/解析管线照旧（写入该项目内路径）。项目内追加上传多份招标文件：保留现有 v16 语义。
+- **新建项目**：选文件 → 立即写 registry（name=首份文件名去扩展名）→ 建项目库+目录 → 原件复制/解析管线照旧（写入该项目内路径）。建库/复制中途失败 → 回滚 registry 条目 + 项目目录，不留孤儿。项目内追加上传多份招标文件：保留现有 v16 语义。
 - **上传即清空下游**（clearDownstreamFromTender，technicalPlanStore.cjs:1587-1617）：语义不变，作用域自动限定在该项目库内。
 - **重命名**：registry UPDATE，name_source=manual。
-- **删除**：醒目二次确认（有运行中任务先展示并终止）→ 软删 registry（顺带清空冗余进度字段）+ 删除项目目录。不做回收站。
+- **删除**：醒目二次确认（有运行中任务先展示并终止——复用 cancelTechnicalPlanTasks 遍历+cancel+waitForSettlement 模式，taskService.cjs:909-921，加 projectId 过滤）→ 软删 registry（顺带清空冗余进度字段）+ 删除项目目录。删除当前活跃项目时同步清 last_active（回退最近活跃项目或落到列表页）；default 项目同样可删（等价空态，重新上传即新建）。不做回收站。
 - **导出**：文件名规则不变（exportService.cjs:3003），数据源改为当前项目库（technicalPlanExport.cjs:68-171 的读取走项目连接）。
 
 ## 10. 错误处理
@@ -179,3 +204,11 @@ CREATE TABLE IF NOT EXISTS projects (
 | 老版本客户端打开新库结构 | 全局库版本号随之提升，老客户端按现有机制拒绝启动，不产生半兼容状态 |
 
 无未决开放问题。
+
+## 14. 评审记录
+
+| 轮次 | 评审方 | 结论 | 修正 |
+|---|---|---|---|
+| 1 | spec-document-reviewer（13 处引用核实） | Approved + 3 建议 | 存量迁移纳入 agent 会话与三域日志归属（ded2823） |
+| 2 | 独立评审A·设计质量（19 处引用核实） | Issues×1 | §5.4 scope 禁止扁平化 → 分层键 `${projectId}:${type}:${task_id}` |
+| 2 | 独立评审B·对抗实施（8 场景推演） | Issues×4 + 建议6 | 新增 §4.1 图片资产项目化；§5.3 清理名单动态化 + 全域键豁免；§7 journal 幂等迁移；§6 隐藏调用面清单；§5.1 引用计数 + store 项目实例化写死；§5.2 重放帧过滤；§9 新建回滚/删除边界。建议全部吸收 |
