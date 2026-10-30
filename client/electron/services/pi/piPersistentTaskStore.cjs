@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createPiEnvironmentLayout } = require('./piEnvironment.cjs');
+const { getProjectsRootDir } = require('../../utils/paths.cjs');
+const { parseProjectTaskKeyDirName } = require('../../utils/projectKeys.cjs');
 
 const TASK_STATE_FILE = 'task-state.json';
 const DELETE_MAX_RETRIES = 5;
@@ -17,9 +19,21 @@ function safeTaskKey(value) {
 }
 
 // 根据 Electron userData 动态计算业务任务专属目录布局。
+// 带项目前缀的任务键（<projectId>_<taskKey>）路由进项目目录，删除项目时随项目目录连带删除；
+// 全域键（如 feasibility-*）仍落在全局 agent-runtime 目录。
 function getPersistentAgentTaskPaths(app, taskKey) {
+  const safeKey = safeTaskKey(taskKey);
+  const parsed = parseProjectTaskKeyDirName(safeKey);
+  if (parsed) {
+    // 项目会话落项目目录：projects/<id>/agent-runtime/pi/tasks/<dir>（删除项目自动带走）
+    const taskRoot = path.join(getProjectsRootDir(app), parsed.projectId, 'agent-runtime', 'pi', 'tasks', safeKey);
+    return buildAgentTaskPaths(taskRoot);
+  }
   const layout = createPiEnvironmentLayout(app);
-  const taskRoot = path.join(layout.tasksRoot, safeTaskKey(taskKey));
+  return buildAgentTaskPaths(path.join(layout.tasksRoot, safeKey));
+}
+
+function buildAgentTaskPaths(taskRoot) {
   return {
     taskRoot,
     workspaceDir: path.join(taskRoot, 'workspace'),

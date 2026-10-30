@@ -55,3 +55,13 @@ test('LRU 池满且全被钉住时，新项目不自淘汰', () => {
   assert.ok(reg.openProjectIds().includes('20261031-b2c3d4'));
   rA(); rB();
 });
+
+test('pi 会话前缀键路由进项目目录', () => {
+  const { getPersistentAgentTaskPaths } = require('../electron/services/pi/piPersistentTaskStore.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yibiao-pi-'));
+  const app = { getPath: (name) => (name === 'userData' ? root : path.join(root, name)) };
+  const globalPaths = getPersistentAgentTaskPaths(app, 'feasibility-report-outline-generation');
+  const projectPaths = getPersistentAgentTaskPaths(app, '20261030-a1b2c3_technical-plan-outline-generation');
+  assert.ok(globalPaths.taskRoot.startsWith(path.join(root, 'agent-runtime')));
+  assert.ok(projectPaths.taskRoot.startsWith(path.join(root, 'workspace', 'projects', '20261030-a1b2c3', 'agent-runtime')));
+});
