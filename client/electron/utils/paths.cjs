@@ -43,6 +43,11 @@ function getWorkspaceDatabasePath(app) {
   return path.join(getWorkspaceDir(app), 'yibiao.sqlite');
 }
 
+/** 各项目的根目录（workspace/projects/<projectId>/），项目库与三域文件都落在各自项目目录内。 */
+function getProjectsRootDir(app) {
+  return path.join(getWorkspaceDir(app), 'projects');
+}
+
 function getTechnicalPlanDir(app) {
   return path.join(getWorkspaceDir(app), 'technical-plan');
 }
@@ -224,6 +229,7 @@ module.exports = {
   getOpenXmlHelperProjectPath,
   getOpenXmlJobDir,
   getOpenXmlJobsDir,
+  getProjectsRootDir,
   getRejectionCheckDir,
   getRejectionCheckDocumentMarkdownPath,
   getTechnicalPlanDir,
