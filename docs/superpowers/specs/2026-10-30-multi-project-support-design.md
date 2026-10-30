@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 | 项 | 现状 | 归属 |
 |---|---|---|
-| agent 持久任务/会话数据 | pi environment 的 tasksRoot（userData 下固定目录，**在 workspace 外**，见 piPersistentTaskStore.cjs:20-30） | 迁入项目目录（§5.3 的前缀改造后自然落在项目内）；存量归 default 项目 |
+| agent 持久任务/会话数据 | pi environment 的 tasksRoot（userData 下固定目录，**在 workspace 外**，见 piPersistentTaskStore.cjs:20-30） | **仅三域键**迁入项目目录（§5.3；feasibility 等全域键不动）；存量三域部分归 default 项目 |
 | 三域流程日志 | `userData/logs/<module>`（paths.cjs:128-137，getDeveloperLogsDir） | technical-plan / duplicate-check / rejection-check 三模块日志改按项目路由；logs/ai 保持全局 |
 | 图片资产（AI 生图/导入图/mermaid 缓存） | 全局 `workspace/generated-images/`、`workspace/imported-images/`、mermaid 缓存 | 三域相关资产迁入项目 `assets/`（见 §4.1） |
 
