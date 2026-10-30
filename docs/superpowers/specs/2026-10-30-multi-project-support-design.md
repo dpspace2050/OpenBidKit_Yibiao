@@ -22,7 +22,7 @@
 | D2 | 项目化范围 | **三域**：标书制作（technical-plan）、查重（duplicate-check）、废标检查（rejection-check）；可行性报告/知识库/资信库/商机维持全局 |
 | D3 | 项目命名 | 上传时**文件名即名**（去扩展名）；outline 阶段 AI 提取后自动更新（name_source=filename→ai）；手动改过（manual）不覆盖 |
 | D4 | 数据隔离架构 | **每项目独立 SQLite + 项目目录 + 全局注册表**（否决单库加 project_id 方案——上百条 SQL 逐条加过滤，漏一条即跨项目数据污染） |
-| D5 | 实施机制三项简化（2026-10-30 补） | ① **app 代理**：项目作用域 store 传 JS Proxy 包装的 app（只拦 `getPath('userData')` → 项目目录），paths.cjs 与 store 内部路径调用零改动，代价是项目目录多一层 `workspace/` 嵌套；② **agent 会话扁平前缀键** `<projectId>_<原taskKey>`，tasksRoot 隔离等价、piPersistentTaskStore 零改动；③ **IPC 缺省当前活跃项目**：main 维护 currentProjectId，三域 handler 内部路由，preload 签名与前端 143 个调用点零改动，事件/日志带 projectId。将来出现跨项目访问需求时再给个别通道追加可选 projectId 参数 |
+| D5 | 实施机制三项简化（2026-10-30 补） | ① **app 代理**：项目作用域 store 传 JS Proxy 包装的 app（只拦 `getPath('userData')` → 项目目录），paths.cjs 与 store 内部路径调用零改动，代价是项目目录多一层 `workspace/` 嵌套；② **agent 会话前缀键路由**：`taskKey = <projectId>_<原taskKey>`，piPersistentTaskStore 单函数按前缀把会话路由进项目目录（删除项目自动带走会话；全局 tasksRoot 只剩全域键，启动清理保留名单零改动）；③ **IPC 缺省当前活跃项目**：main 维护 currentProjectId，三域 handler 内部路由，preload 签名与前端 143 个调用点零改动，事件/日志带 projectId。将来出现跨项目访问需求时再给个别通道追加可选 projectId 参数 |
 
 ### 附带结论
 
@@ -127,9 +127,8 @@ CREATE TABLE IF NOT EXISTS projects (
 
 - 现状：会话按全局 TASK_KEY 存固定目录（agentService.cjs:690-747）；`primarySession` 全局单例（:176、:443-455）隐含互斥。
 - 改法：
-  - 会话按**扁平前缀键**隔离（D5②）：`taskKey = <projectId>_<原taskKey>`（safeTaskKey 兼容，目录天然分项目）；全域键（feasibility 等）不加前缀；`primarySession` 改为 **per-project 单例**（Map，全域键归 '' 槽）。Pi Runtime 本就是每任务一实例（:426-437），无需改；
-  - **仅三域 TASK_KEY 项目化**——`FEASIBILITY_OUTLINE_AGENT_TASK_KEY` 等全域键保持原样（可研维持全局，不被前缀化、不搬进项目目录）；
-  - `clearStalePiTaskArchives`（storageCleanupService.cjs:18-25、:46-55，每次启动执行）的静态保留名单 `PERSISTENT_AGENT_TASK_KEYS` 改为**动态生成**（projects 注册表 × 三域键 + 全域键）——键加项目前缀后静态名单全部失配，会每次启动把所有项目 agent 会话当垃圾清掉（评审B Issue 4）；
+  - 会话按**前缀键路由**（D5② 终版）：`taskKey = <projectId>_<原taskKey>`（safeTaskKey 兼容）；piPersistentTaskStore 的 getPersistentAgentTaskPaths 按前缀把路径路由到 `projects/<id>/agent-runtime/pi/tasks/`——项目会话物理落在项目目录内，**删除项目自动带走会话**；全域键（feasibility 等）不加前缀、留在全局 tasksRoot；
+  - `clearStalePiTaskArchives`（storageCleanupService.cjs:18-25、:46-55）**无需改**：项目会话迁走后全局 tasksRoot 只剩全域键，静态保留名单继续匹配（评审B Issue 4 由目录归属结构性解决）；
   - `pendingQuestions` 全局单队列（agentService.cjs:173-174、:274-279）双项目并发时弹窗无归属——payload 与 UI 增加项目标识。
 
 ### 5.4 AI 队列
