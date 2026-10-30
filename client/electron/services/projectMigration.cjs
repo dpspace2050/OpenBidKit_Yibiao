@@ -7,7 +7,6 @@ const { getWorkspaceDir, getProjectsRootDir, getAgentRuntimeDir, getUserDataPath
 const { THREE_DOMAIN_TABLES } = require('./sqliteDatabase.cjs');
 
 const LEGACY_AGENT_KEYS = ['technical-plan-outline-generation', 'technical-plan-template-extraction', 'technical-plan-global-facts', 'technical-plan-original-restoration', 'technical-plan-content-generation'];
-const STEPS = ['backup', 'copy-tables', 'move-dirs', 'move-agent-sessions', 'drop-tables', 'activate'];
 
 function journalPath(app) { return path.join(getProjectsRootDir(app), '.legacy-migration.json'); }
 
@@ -32,6 +31,10 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
   if (!hasLegacyTables) return { migrated: false };
 
   let journal = readJournal(app);
+  // fatal 粘性：上次已判死（failCount 达阈值）→ 停机信号跨启动持续，绝不自动重跑
+  if (journal && journal.status === 'failed') {
+    return { migrated: false, fatal: true, projectId: journal.projectId, error: journal.error || '迁移此前已失败', backupDir: path.join(getProjectsRootDir(app), '.legacy-backup') };
+  }
   const resume = Boolean(journal && journal.status === 'migrating');
   if (journal && journal.status === 'done') return { migrated: false };
 
@@ -75,25 +78,32 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
     if (!done('copy-tables')) {
       fs.mkdirSync(projectDir, { recursive: true });
       const pdb = new Database(dbPath);
-      pdb.pragma('journal_mode = WAL');
-      const { ensureProjectSchemaHealth } = require('./sqliteDatabase.cjs');
-      ensureProjectSchemaHealth(pdb);
-      pdb.exec(`ATTACH DATABASE '${globalDb.name.replace(/'/g, "''")}' AS legacy`);
-      // 显式列交集复制：SELECT * 按位映射，两库列序不一致会静默错位
-      const copy = pdb.transaction(() => {
-        for (const t of THREE_DOMAIN_TABLES) {
-          const projectCols = pdb.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
-          const legacyCols = pdb.prepare(`PRAGMA legacy.table_info(${t})`).all().map((c) => c.name);
-          // 老库缺表按空表跳过（与复制零行等价，项目侧仍由 ensureProjectSchemaHealth 建全表）；
-          // 表存在但无交集列仍按原计划抛错（schema 漂移防护）。
-          if (legacyCols.length === 0) continue;
-          const cols = projectCols.filter((c) => legacyCols.includes(c));
-          if (cols.length === 0) throw new Error(`复制表失败 ${t}: 无交集列`);
-          const colList = cols.join(', ');
-          try { pdb.exec(`INSERT INTO main.${t} (${colList}) SELECT ${colList} FROM legacy.${t}`); } catch (error) { throw new Error(`复制表失败 ${t}: ${error.message}`); }
-        }
-      });
-      try { copy(); } finally { pdb.exec('DETACH DATABASE legacy'); pdb.close(); }
+      try {
+        pdb.pragma('journal_mode = WAL');
+        const { ensureProjectSchemaHealth } = require('./sqliteDatabase.cjs');
+        ensureProjectSchemaHealth(pdb);
+        pdb.exec(`ATTACH DATABASE '${globalDb.name.replace(/'/g, "''")}' AS legacy`);
+        // 显式列交集复制：SELECT * 按位映射，两库列序不一致会静默错位；
+        // INSERT OR REPLACE：copy 事务提交后、mark('copy-tables') 前崩溃的重放幂等（不撞 PK）
+        const copy = pdb.transaction(() => {
+          for (const t of THREE_DOMAIN_TABLES) {
+            const projectCols = pdb.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+            const legacyCols = pdb.prepare(`PRAGMA legacy.table_info(${t})`).all().map((c) => c.name);
+            // 老库缺表按空表跳过（与复制零行等价，项目侧仍由 ensureProjectSchemaHealth 建全表）；
+            // 表存在但无交集列仍按原计划抛错（schema 漂移防护）。
+            if (legacyCols.length === 0) continue;
+            const cols = projectCols.filter((c) => legacyCols.includes(c));
+            if (cols.length === 0) throw new Error(`复制表失败 ${t}: 无交集列`);
+            const colList = cols.join(', ');
+            try { pdb.exec(`INSERT OR REPLACE INTO main.${t} (${colList}) SELECT ${colList} FROM legacy.${t}`); } catch (error) { throw new Error(`复制表失败 ${t}: ${error.message}`); }
+          }
+        });
+        copy();
+      } finally {
+        // 建表/ATTACH/复制任一环抛错都要释放句柄；未成功 ATTACH 时 DETACH 报错可忽略
+        try { pdb.exec('DETACH DATABASE legacy'); } catch (_) {}
+        pdb.close();
+      }
       mark('copy-tables');
     }
 
@@ -126,8 +136,9 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
     writeJournal(app, journal);
     if (journal.failCount >= 3) {
       journal.status = 'failed';
+      journal.error = String(error?.message || error); // 落盘死因，供粘性短路原样带回
       writeJournal(app, journal);
-      return { migrated: false, fatal: true, projectId, error: String(error?.message || error), backupDir: path.join(projectsRoot, '.legacy-backup') };
+      return { migrated: false, fatal: true, projectId, error: journal.error, backupDir: path.join(projectsRoot, '.legacy-backup') };
     }
     throw error; // 未达阈值：本次启动标错，下次启动幂等续跑
   }

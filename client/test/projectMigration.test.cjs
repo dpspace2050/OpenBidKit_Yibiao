@@ -22,16 +22,10 @@ function tableNames(db) {
   return new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
 }
 
-// 合成老布局：全局库（workspace/yibiao.sqlite）只建三域代表表（4/32，表结构最小化、
-// 列名与显式列交集复制兼容——覆盖项目侧 NOT NULL 无默认列），目录为迁移前的平铺结构。
-function makeLegacyEnv(prefix) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const app = makeFakeApp(root);
-  const workspaceDir = path.join(root, 'workspace');
-  fs.mkdirSync(workspaceDir, { recursive: true });
-  const globalDbPath = path.join(workspaceDir, 'yibiao.sqlite');
-  const globalDb = new Database(globalDbPath);
-  globalDb.exec(`
+// 老全局库的三域代表表（4/32，表结构最小化、列名与显式列交集复制兼容——覆盖项目侧 NOT NULL 无默认列）
+// 与种子数据；抽成函数供重放测试重建现场（崩溃发生在 drop-tables 前 → 全局三域表仍在、数据未动）。
+function seedLegacyGlobalDb(db) {
+  db.exec(`
     CREATE TABLE technical_plan_meta (
       id INTEGER PRIMARY KEY,
       outline_project_name TEXT,
@@ -49,10 +43,21 @@ function makeLegacyEnv(prefix) {
     CREATE TABLE duplicate_check_meta (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE rejection_check_meta (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
-  globalDb.prepare("INSERT INTO technical_plan_meta (id, outline_project_name, created_at, updated_at) VALUES (1, '老项目', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
-  globalDb.prepare("INSERT INTO technical_plan_outline_nodes (node_id, title, sort_order, level, created_at, updated_at) VALUES ('node-1', '老节点', 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
-  globalDb.prepare("INSERT INTO duplicate_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
-  globalDb.prepare("INSERT INTO rejection_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO technical_plan_meta (id, outline_project_name, created_at, updated_at) VALUES (1, '老项目', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO technical_plan_outline_nodes (node_id, title, sort_order, level, created_at, updated_at) VALUES ('node-1', '老节点', 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO duplicate_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO rejection_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+}
+
+// 合成老布局：全局库（workspace/yibiao.sqlite）只建三域代表表，目录为迁移前的平铺结构。
+function makeLegacyEnv(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const app = makeFakeApp(root);
+  const workspaceDir = path.join(root, 'workspace');
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  const globalDbPath = path.join(workspaceDir, 'yibiao.sqlite');
+  const globalDb = new Database(globalDbPath);
+  seedLegacyGlobalDb(globalDb);
   putFile(path.join(workspaceDir, 'technical-plan', 'tender.md'), '# 标书');
   putFile(path.join(workspaceDir, 'duplicate-check', 'contents', 'f1.md'), '查重文件');
   putFile(path.join(workspaceDir, 'rejection-check', 'bids', 'd1.md'), '废标文件');
@@ -206,6 +211,58 @@ test('加分项 断点续跑：journal=migrating 且 backup/copy-tables 已完�
   assert.equal(list[0].status, 'active');
   const journal = JSON.parse(fs.readFileSync(journalPath(env.app), 'utf8'));
   assert.equal(journal.status, 'done');
+
+  env.globalDb.close();
+});
+
+test('重放幂等：copy 事务已提交但未 mark → 续跑 INSERT OR REPLACE 不撞 PK（meta 行数仍 1）', () => {
+  const env = makeLegacyEnv('yibiao-mig-replay-');
+  const first = runLegacyMigration({ app: env.app, globalDb: env.globalDb, registry: env.registry });
+  assert.equal(first.migrated, true);
+  const projectId = first.projectId;
+
+  // 模拟崩溃窗口：copy 事务已提交、doneSteps 未记录 copy-tables；
+  // 此时 drop-tables 必然也未执行 → 重建全局三域表与数据还原现场
+  seedLegacyGlobalDb(env.globalDb);
+  fs.writeFileSync(journalPath(env.app), JSON.stringify({ status: 'migrating', projectId, doneSteps: ['backup'] }, null, 2));
+
+  const result = runLegacyMigration({ app: env.app, globalDb: env.globalDb, registry: env.registry });
+  assert.equal(result.migrated, true, `重放应续跑成功而非撞 PK: ${result.error || ''}`);
+  assert.equal(result.projectId, projectId);
+
+  // OR REPLACE 幂等实锤：重放复制后 meta 行数仍为 1（旧行为 INSERT 撞 PK 抛错 → failCount 假累积）
+  const check = new Database(path.join(env.root, 'workspace', 'projects', projectId, 'project.sqlite'), { readonly: true });
+  assert.equal(check.prepare('SELECT COUNT(*) AS n FROM technical_plan_meta').get().n, 1);
+  check.close();
+
+  const journal = JSON.parse(fs.readFileSync(journalPath(env.app), 'utf8'));
+  assert.equal(journal.status, 'done');
+  assert.equal(env.registry.list().length, 1, '续跑不重复建项目');
+  const globalTables = tableNames(env.globalDb);
+  for (const t of THREE_DOMAIN_TABLES) assert.ok(!globalTables.has(t), `重放后全局表应再次 DROP: ${t}`);
+
+  env.globalDb.close();
+});
+
+test('fatal 粘性：journal status=failed → 短路返回 fatal:true（error 含 boom），不产生新项目/不动目录', () => {
+  const env = makeLegacyEnv('yibiao-mig-fatal-');
+  fs.mkdirSync(path.dirname(journalPath(env.app)), { recursive: true });
+  fs.writeFileSync(journalPath(env.app), JSON.stringify({ status: 'failed', projectId: 'x', error: 'boom' }, null, 2));
+
+  const result = runLegacyMigration({ app: env.app, globalDb: env.globalDb, registry: env.registry });
+  assert.equal(result.migrated, false);
+  assert.equal(result.fatal, true);
+  assert.equal(result.projectId, 'x');
+  assert.ok(String(result.error).includes('boom'), `error 应含此前记录的 boom: ${result.error}`);
+  assert.equal(result.backupDir, path.join(env.root, 'workspace', 'projects', '.legacy-backup'));
+
+  // 停机信号生效：不重跑、不覆盖 journal、现场原样
+  assert.equal(env.registry.list().length, 0, '不应创建新项目');
+  assert.ok(!fs.existsSync(path.join(env.root, 'workspace', 'projects', 'x')), '不应建项目目录');
+  assert.ok(fs.existsSync(path.join(env.workspaceDir, 'technical-plan', 'tender.md')), '老目录应原样未动');
+  const journal = JSON.parse(fs.readFileSync(journalPath(env.app), 'utf8'));
+  assert.equal(journal.status, 'failed');
+  assert.equal(journal.error, 'boom');
 
   env.globalDb.close();
 });
