@@ -757,7 +757,7 @@ Select-String -Path electron/ipc/taskIpc.cjs -Pattern "taskService\.(\w+)" | For
 - [ ] **Step 3: agent 任务键前缀化**
 
 ```powershell
-Select-String -Path electron/services/*.cjs,electron/services/agentConfigs/*.cjs -Pattern "_AGENT_TASK_KEY" -List 2>$null; Select-String -Path electron/services/*.cjs -Pattern "AGENT_TASK_KEY" | Select-Object -ExpandProperty Line
+Get-ChildItem -Path electron -Recurse -Filter *.cjs | Select-String -Pattern "AGENT_TASK_KEY" | Select-Object Path,LineNumber,Line
 ```
 
 对每个**使用点**（launchTask / loadPersistentTask / deletePersistentTask / hasPersistentTaskSession / forkPersistentTask 调用处的 KEY 常量）：三域的 5 个 KEY（OUTLINE / TEMPLATE_EXTRACTION / GLOBAL_FACTS / ORIGINAL_RESTORATION / CONTENT_GENERATION）包 `projectTaskKey(projectId, KEY)`；feasibility 的 KEY 保持原样。recover* 里的 loadPersistentTask 同改（projectId 从 recover 入参拿）。
@@ -1076,8 +1076,9 @@ function registerProjectsIpc({ app, registry, storeRegistry, taskService, config
       const importResult = await taskService.importTenderDocument(filePaths);
       return { projectId, name, importResult };
     } catch (error) {
-      // 新建失败回滚（spec §9）：不留孤儿 registry 行/目录
+      // 新建失败回滚（spec §9）：不留孤儿 registry 行/目录（先关连接再删——importTenderDocument 已打开项目库，Windows 下句柄未关 rmSync 会 EBUSY）
       registry.remove(projectId);
+      storeRegistry.closeProject(projectId);
       try { fs.rmSync(path.join(getProjectsRootDir(app), projectId), { recursive: true, force: true, maxRetries: 5 }); } catch (_) {}
       storeRegistry.setCurrent(null);
       emitActive(null);
