@@ -10,7 +10,15 @@
 
 **设计文档：** `docs/superpowers/specs/2026-10-30-multi-project-support-design.md`（唯一需求来源，实施前必读；D1-D5 决策不可违背）
 
-**⚠️ 测试策略说明：** 项目无测试框架（沿用现状，不引入 jest/vitest）。**新增纯逻辑模块用 Node 内置 `node --test`**（零依赖）；改造中的存量文件用 `node --check` + `npm run build`（tsc 双关卡）+ `node -e` 冒烟；Task 14 集中做 CDP 集成验证与真实迁移实测。
+**⚠️ 测试策略说明：** 项目无测试框架（沿用现状，不引入 jest/vitest）。新增纯逻辑模块用 Node 内置 test runner；改造中的存量文件用 `node --check` + `npm run build`（tsc 双关卡）+ `node -e` 冒烟；Task 14 集中做 CDP 集成验证与真实迁移实测。
+
+**⚠️ 单测运行方式（审计B实测结论，照抄 node 会炸）：** `better-sqlite3` 按 Electron ABI 重编译，系统 node require 报 `NODE_MODULE_VERSION 145≠137`。**凡测试文件 require 了任何 electron 服务模块（含 better-sqlite3），必须用 electron-as-node 跑**：
+
+```powershell
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/<file>.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
+```
+
+（已实测可跑。纯逻辑零依赖测试（如 projectKeys）用 `node --test` 即可。）
 
 **工作目录：** 所有命令在 `D:\Neo\Neo\tmp\OpenBidKit_Yibiao\client` 执行（下称 `client/`）。分支 `feature/multi-project-support`。
 
@@ -147,10 +155,9 @@ Expected: 3 pass, 0 fail
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add ../client/electron/utils/projectKeys.cjs ../client/test/projectKeys.test.cjs 2>$null; git add electron/utils/projectKeys.cjs test/projectKeys.test.cjs; git commit -m "feat: projectKeys 工具（id生成/前缀键/slot键/队列scope分层键）"
+git add electron/utils/projectKeys.cjs test/projectKeys.test.cjs
+git commit -m "feat: projectKeys 工具（id生成/前缀键/slot键/队列scope分层键）"
 ```
-
-（在 client/ 下执行：`git add electron/utils/projectKeys.cjs test/projectKeys.test.cjs`）
 
 ---
 
@@ -213,7 +220,7 @@ test('migrating 状态机：markMigrating/markActive', () => {
 - [ ] **Step 2: 跑测试确认失败**
 
 ```powershell
-node --test test/projectRegistry.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectRegistry.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 Expected: FAIL（module 不存在）
@@ -283,7 +290,7 @@ module.exports = { createProjectRegistry };
 - [ ] **Step 4: 跑测试确认通过**
 
 ```powershell
-node --test test/projectRegistry.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectRegistry.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 Expected: 4 pass
@@ -349,17 +356,27 @@ function ensureProjectSchemaHealth(db, onStatus) {
 
 `module.exports` 增加 `ensureProjectSchemaHealth`、`THREE_DOMAIN_TABLES`。
 
-- [ ] **Step 5: 冒烟 + 构建**
+- [ ] **Step 5: 版本栅栏（审计A Issue 1）**
+
+`const schemaVersion = 36` → `37`，migrations 数组末尾追加**空迁移**（纯版本栅栏——老客户端(36)打开新库按现有 :1834-1835 机制拒绝启动，防止其 health 组在全局库重建三域空表，spec §13 红线）：
+
+```js
+  { version: 37, description: '多项目支持：全局库剔除三域表归属（版本栅栏）', up: () => {} },
+```
+
+- [ ] **Step 6: 冒烟 + 构建**
 
 ```powershell
 node --check electron/services/sqliteDatabase.cjs
-node -e "const m = require('./electron/services/sqliteDatabase.cjs'); console.log(typeof m.ensureProjectSchemaHealth, m.THREE_DOMAIN_TABLES.length)"
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron -e "const m = require('./electron/services/sqliteDatabase.cjs'); console.log(typeof m.ensureProjectSchemaHealth, m.THREE_DOMAIN_TABLES.length)"; $env:ELECTRON_RUN_AS_NODE=$null
 npm run build
 ```
 
+（sqliteDatabase.cjs 顶部 require better-sqlite3——系统 node 冒烟会 ABI 报错，必须 electron-as-node。）
+
 Expected: `function 32`（表数与 Step 1 核对结果一致，technical_plan 10 + duplicate_check 14 + rejection_check 8 = 32）+ 构建通过。
 
-- [ ] **Step 6: Commit**（`feat: sqliteDatabase 拆全局/项目 health 组，导出三域表清单`）
+- [ ] **Step 7: Commit**（`feat: sqliteDatabase 拆全局/项目 health 组 + v37 版本栅栏，导出三域表清单`）
 
 ---
 
@@ -426,7 +443,7 @@ test('resolveStores 缺省当前项目；无项目时抛错', () => {
 - [ ] **Step 3: 跑测试确认失败**
 
 ```powershell
-node --test test/projectStoreRegistry.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectStoreRegistry.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 - [ ] **Step 4: 实现**
@@ -487,7 +504,13 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
   function getContext(projectId) {
     let ctx = contexts.get(projectId);
     if (!ctx) {
-      ctx = buildContext(projectId);
+      try {
+        ctx = buildContext(projectId);
+        openErrors.delete(projectId);
+      } catch (error) {
+        openErrors.set(projectId, String(error?.message || error)); // spec §10：标错隔离，不拖垮其他项目
+        throw Object.assign(new Error(`项目打开失败: ${openErrors.get(projectId)}`), { code: 'PROJECT_OPEN_FAILED', projectId });
+      }
       contexts.set(projectId, ctx);
       evictIfNeeded();
       try { onProjectOpened?.(projectId, storesOf(ctx)); } catch (error) { console.warn('[project-registry] 项目打开回调失败', error); }
@@ -507,6 +530,7 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
   }
 
   // 引用计数：任务起止与三域 IPC handler 出入口成对调用（spec §5.1）
+  const openErrors = new Map(); // projectId -> message（打开失败标错，spec §10）
   function acquire(projectId) { const ctx = getContext(projectId); ctx.refCount += 1; let released = false; return () => { if (!released) { released = true; ctx.refCount = Math.max(0, ctx.refCount - 1); } }; }
   function resolveStores(projectId = currentProjectId) {
     if (!projectId) throw new Error('尚未选择项目，请先在项目列表选择或新建');
@@ -517,23 +541,31 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
     if (currentProjectId) registry.touch(currentProjectId);
   }
   function getCurrentProjectId() { return currentProjectId; }
+  function getOpenErrors() { return Object.fromEntries(openErrors); }
   function openProjectIds() { return [...contexts.keys()]; }
+  // 删除项目前必须先关它的连接（Windows 下句柄打开中 rmSync 必 EBUSY——审计B Issue 2）
+  function closeProject(projectId) {
+    const ctx = contexts.get(projectId);
+    if (!ctx) return;
+    contexts.delete(projectId);
+    try { ctx.db.close(); } catch (_) {}
+  }
   function closeAll() { for (const ctx of contexts.values()) { try { ctx.db.close(); } catch (_) {} } contexts.clear(); }
 
-  return { getContext, acquire, resolveStores, setCurrent, getCurrentProjectId, openProjectIds, closeAll, createProjectAppProxy };
+  return { getContext, acquire, resolveStores, setCurrent, getCurrentProjectId, getOpenErrors, closeProject, openProjectIds, closeAll, createProjectAppProxy };
 }
 
 module.exports = { createProjectStoreRegistry, createProjectAppProxy };
 ```
 
-- [ ] **Step 4b: 打开失败的标错隔离（spec §10，评审建议）**
+- [ ] **Step 4b: 打开失败的标错隔离（spec §10，审计A Issue 4 闭环）**
 
-buildContext 抛错时包装为 `{ code: 'PROJECT_OPEN_FAILED', projectId, message }`；projectsIpc 的 list/setActive 捕获后给该项目附 `openError` 字段返回（列表页显示错误态、禁入，不拖垮其他项目与全局库）。项目库版本高于客户端的降级保护（沿用 sqliteDatabase :1834-1835 思路）归入同一错误通道。
+已在实现中内置：`openErrors` Map + `PROJECT_OPEN_FAILED` typed error + `getOpenErrors()`。Task 9 的 `projects:list` 响应携带 `openErrors`（`{ ...registry.list() }` 每项附 `openError: openErrors[id] || null`），列表页对 openError 非空的项目显示错误态、禁入。项目库版本高于客户端的降级保护（沿用 sqliteDatabase :1834-1835 思路）归入同一错误通道。
 
 - [ ] **Step 5: 跑测试确认通过**
 
 ```powershell
-node --test test/projectStoreRegistry.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectStoreRegistry.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 Expected: 2 pass
@@ -593,7 +625,7 @@ test('pi 会话前缀键路由进项目目录', () => {
 - [ ] **Step 3: 跑测试 + node --check + Commit**（`feat: pi 会话按项目前缀键路由进项目目录`）
 
 ```powershell
-node --test test/projectStoreRegistry.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectStoreRegistry.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 node --check electron/services/pi/piPersistentTaskStore.cjs
 ```
 
@@ -661,7 +693,9 @@ getActiveTaskConflict 增加 projectId 入参；循环内加一行：
 
 - [ ] **Step 6: cancel*/pause*/getActiveTasks（:909-950、:1516-1539、:1721）**
 
-- cancel* 三函数增加可选 projectId 过滤参数（缺省=当前项目）：遍历时 `if (projectId && task.project_id !== projectId) continue;`
+- cancel* 统一**写死签名** `(reason, { taskTypes, projectId } = {})`——projectId **显式传入才过滤**（遍历时 `if (projectId && task.project_id !== projectId) continue;`）。⚠️ 禁止"缺省=当前项目"语义：删除非当前项目时会误取消当前项目的任务（审计B Issue 3c）。
+- **新增 `cancelDuplicateCheckTasks`**（现状不存在，taskService.cjs:909-949 只有 technical/rejection/feasibility 三个——审计B Issue 3a）：复用 cancelTechnicalPlanTasks 模式，group 过滤 `'duplicate-check'`。
+- **任务起止引用计数**（spec §5.1）：startManagedTask 获取任务对象后 `const release = task.project_id ? storeRegistry?.acquire(task.project_id) : null`，finally（:895-899）里 `release?.()`——运行中任务的连接不被 LRU 淘汰。
 - pause*（:1516、:1534）：`activeTasks.get('content-generation')` → `activeTasks.get(taskSlotKey(resolveProjectId(), 'content-generation'))`（resolveProjectId = `payload?.projectId || storeRegistry?.getCurrentProjectId() || null`）
 - getActiveTasks（:1721）与 subscribe 重放（:522-530）不改——全量输出，渲染层过滤（Task 13）。
 
@@ -676,6 +710,8 @@ node --check electron/services/taskService.cjs
 node -e "const m = require('./electron/services/taskService.cjs'); console.log('loaded', typeof m)"
 npm run build
 ```
+
+（taskService 不直接 require better-sqlite3，系统 node 冒烟可行——上一功能已验证。group-exclusive 项目内互斥/跨项目放行的行为验证由 T14 CDP 场景 #6 承担，与既有测试策略一致——审计A覆盖说明。）
 
 - [ ] **Step 9: Commit**（`feat: taskService 项目化机制层（slot键/项目内互斥/分层scope/事件project_id/恢复惰性化）`）
 
@@ -726,9 +762,13 @@ Select-String -Path electron/services/*.cjs,electron/services/agentConfigs/*.cjs
 
 对每个**使用点**（launchTask / loadPersistentTask / deletePersistentTask / hasPersistentTaskSession / forkPersistentTask 调用处的 KEY 常量）：三域的 5 个 KEY（OUTLINE / TEMPLATE_EXTRACTION / GLOBAL_FACTS / ORIGINAL_RESTORATION / CONTENT_GENERATION）包 `projectTaskKey(projectId, KEY)`；feasibility 的 KEY 保持原样。recover* 里的 loadPersistentTask 同改（projectId 从 recover 入参拿）。
 
+**明确列出（审计A Issue 5，勿只靠 grep 兜底）**：`technical-plan:preview-content-word` 链（technicalPlanIpc.cjs:17 → contentGenerationOutput.cjs:29 previewContentSection）用裸 CONTENT_GENERATION_AGENT_TASK_KEY 调 loadPersistentTask——previewContentSection 签名加 projectId 入参，内部 taskKey 包前缀；IPC handler 侧传当前 projectId（T9 Step 2 路由时注意该通道不是解构 store 能解决的，走本处改造）。
+
 - [ ] **Step 4: primarySession per-project（agentService.cjs :176、:443-476）**
 
 `let primarySession = loadPrimaryAgentSession(app)` → `const primarySessions = new Map(); let primarySession = loadPrimaryAgentSession(app);`（'' 槽=全域）。isPrimarySession/setPrimarySession/clearPrimarySessionIfMatches 增加 projectId 入参（缺省 ''）：读写 `primarySessions.get(projectId || '') ?? ((projectId || '') === '' ? primarySession : null)`（⚠️ 括号必须加——`projectId || '' === ''` 恒真值会让 map miss 恒回全局槽）。taskService bindTaskContext（:876-890）传入 task.project_id。
+
+**⚠️ 持久化也必须分项目槽（审计B Issue 4）**：primarySession 落盘在 `runtimeRoot/primary-session.json` 单文件（piPrimarySessionStore.cjs:8，createPiEnvironmentLayout 的第二个调用者）——项目 A/B 互踩，重启恢复错项目。改法与 T5 同套路：loadPrimaryAgentSession/savePrimaryAgentSession 增加 projectId，按前缀路由到 `projects/<id>/agent-runtime/pi/primary-session.json`（全域槽留原路径）；agentService 恢复时（:177-191）仅恢复全域槽，项目槽在该项目首次打开（onProjectOpened）时惰性恢复进 Map。
 
 - [ ] **Step 5: pendingQuestions 项目标识（:173-174、:274-282、:320-382）**
 
@@ -770,7 +810,7 @@ npm run build
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
-const { getWorkspaceDir, getProjectsRootDir, getAgentRuntimeDir } = require('../utils/paths');
+const { getWorkspaceDir, getProjectsRootDir, getAgentRuntimeDir, getUserDataPath } = require('../utils/paths');
 const { THREE_DOMAIN_TABLES } = require('./sqliteDatabase');
 
 const LEGACY_AGENT_KEYS = ['technical-plan-outline-generation', 'technical-plan-template-extraction', 'technical-plan-global-facts', 'technical-plan-original-restoration', 'technical-plan-content-generation'];
@@ -849,9 +889,15 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
     const { ensureProjectSchemaHealth } = require('./sqliteDatabase');
     ensureProjectSchemaHealth(pdb);
     pdb.exec(`ATTACH DATABASE '${globalDb.name.replace(/'/g, "''")}' AS legacy`);
+    // 显式列交集复制（审计B建议①）：SELECT * 按位映射，未来两库列序不一致会静默错位
     const copy = pdb.transaction(() => {
       for (const t of THREE_DOMAIN_TABLES) {
-        try { pdb.exec(`INSERT INTO main.${t} SELECT * FROM legacy.${t}`); } catch (error) { throw new Error(`复制表失败 ${t}: ${error.message}`); }
+        const projectCols = pdb.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
+        const legacyCols = pdb.prepare(`PRAGMA legacy.table_info(${t})`).all().map((c) => c.name);
+        const cols = projectCols.filter((c) => legacyCols.includes(c));
+        if (cols.length === 0) throw new Error(`复制表失败 ${t}: 无交集列`);
+        const colList = cols.join(', ');
+        try { pdb.exec(`INSERT INTO main.${t} (${colList}) SELECT ${colList} FROM legacy.${t}`); } catch (error) { throw new Error(`复制表失败 ${t}: ${error.message}`); }
       }
     });
     try { copy(); } finally { pdb.exec('DETACH DATABASE legacy'); pdb.close(); }
@@ -861,6 +907,10 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
   if (!done('move-dirs')) {
     for (const dir of ['technical-plan', 'duplicate-check', 'rejection-check', 'generated-images', 'imported-images']) {
       moveDirSafe(path.join(workspaceDir, dir), path.join(projectDir, 'workspace', dir));
+    }
+    // 三域模块日志（userData/logs/<module>，审计A补——spec §7 第5步）：迁入项目 logs/（代理路径 <projectDir>/logs/<module>）
+    for (const module of ['technical-plan', 'duplicate-check', 'rejection-check']) {
+      moveDirSafe(path.join(getUserDataPath(app), 'logs', module), path.join(projectDir, 'logs', module));
     }
     mark('move-dirs');
   }
@@ -916,7 +966,7 @@ index.cjs 调用侧（Task 9 接线）：`fatal: true` 时 → `sqliteDatabase.c
 - [ ] **Step 4: 跑测试确认通过**（含幂等重跑断言）
 
 ```powershell
-node --test test/projectMigration.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectMigration.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 - [ ] **Step 5: Commit**（`feat: 存量迁移 journal 幂等（备份/复制/搬目录/会话改名/DROP/激活）`）
@@ -982,28 +1032,34 @@ handler 逐个包裹）。resolve 入口统一打一条日志（含 handler 名�
 const { ipcMain } = require('electron');
 const fs = require('fs');
 
-function registerProjectsIpc({ app, registry, storeRegistry, taskService, onActiveChanged }) {
+function registerProjectsIpc({ app, registry, storeRegistry, taskService, configStore, onActiveChanged }) {
   const emitActive = (projectId) => { try { onActiveChanged?.(projectId); } catch (_) {} };
+  const persistLastProject = (projectId) => { try { const config = configStore.load(); configStore.save({ ...config, last_project_id: projectId || null }); } catch (_) {} };
 
-  ipcMain.handle('projects:list', () => ({ projects: registry.list(), activeProjectId: storeRegistry.getCurrentProjectId() }));
+  ipcMain.handle('projects:list', () => ({
+    projects: registry.list().map((p) => ({ ...p, openError: storeRegistry.getOpenErrors()[p.id] || null })),
+    activeProjectId: storeRegistry.getCurrentProjectId(),
+  }));
   ipcMain.handle('projects:set-active', (_e, projectId) => {
     if (projectId) {
       const project = registry.get(projectId);
       if (!project) throw new Error(`项目不存在: ${projectId}`);
     }
     storeRegistry.setCurrent(projectId || null);
-    const config = configStoreSafeLoad(app);
+    persistLastProject(projectId || null);
     emitActive(projectId || null);
     return { ok: true };
   });
   ipcMain.handle('projects:rename', (_e, { projectId, name }) => { registry.rename(projectId, name); return { ok: true }; });
   ipcMain.handle('projects:remove', async (_e, { projectId }) => {
-    await taskService.cancelTechnicalPlanTasks(undefined, projectId);
-    await taskService.cancelDuplicateCheckTasks?.(projectId);
-    await taskService.cancelRejectionCheckTasks(projectId);
+    // 终止该项目的运行中任务（cancel 签名见 T6 Step 6：projectId 显式过滤）
+    await taskService.cancelTechnicalPlanTasks(undefined, { projectId });
+    await taskService.cancelDuplicateCheckTasks(undefined, { projectId });
+    await taskService.cancelRejectionCheckTasks(undefined, { projectId });
+    storeRegistry.closeProject(projectId); // ⚠️ 必须先关连接再删目录——Windows 句柄打开中 rmSync 必 EBUSY（审计B Issue 2）
     registry.remove(projectId);
     fs.rmSync(path.join(getProjectsRootDir(app), projectId), { recursive: true, force: true, maxRetries: 5 });
-    if (storeRegistry.getCurrentProjectId() === projectId) { storeRegistry.setCurrent(null); emitActive(null); }
+    if (storeRegistry.getCurrentProjectId() === projectId) { storeRegistry.setCurrent(null); persistLastProject(null); emitActive(null); }
     return { ok: true };
   });
   ipcMain.handle('projects:create-from-tender-file', async (_e, { filePaths }) => {
@@ -1032,11 +1088,11 @@ function registerProjectsIpc({ app, registry, storeRegistry, taskService, onActi
 module.exports = { registerProjectsIpc };
 ```
 
-（`configStoreSafeLoad`/`getProjectsRootDir`/`path` 按需 require；cancel 系列签名按 Task 6 实际实现对齐——缺省第一参是 typeFilter 时传 undefined。last_project_id 持久化在 setActive 里经注入的 configStore.save 完成，实现时从 index.cjs 传 configStore 进来。）
+（`getProjectsRootDir`/`path` 按需 require；configStore 由 index.cjs 注入（审计B Issue 1：全库不存在 configStoreSafeLoad，勿引用）。**注册顺序：registerProjectsIpc 必须在 clearWorkspaceDatabaseIpc() 之后调用**——否则占位清除机制会把 projects 通道一并清掉（审计B建议②）。index.cjs 初始化 currentProject 时同样 persistLastProject。）
 
 - [ ] **Step 4: workspaceDatabaseChannels 与占位 handler（:124-254）**
 
-通道清单数组追加：`projects:list / projects:set-active / projects:rename / projects:remove / projects:create-from-tender-file`（pending 阶段占位 handler 覆盖，防 DB 未就绪时 pending 无响应）。
+通道清单数组追加：`projects:list / projects:set-active / projects:rename / projects:remove / projects:create-from-tender-file`（pending 阶段占位 handler 覆盖，防 DB 未就绪时 pending 无响应）。注：spec §6 的 `getActive` 通道并入 `projects:list` 响应（activeProjectId 字段，功能等价——审计A建议）。
 
 - [ ] **Step 5: preload.cjs 新增 projects 段（AppBridge 内）**
 
@@ -1104,7 +1160,7 @@ npm run build
   // getImportedImagesRoot 同构
 ```
 
-注入到：main.cjs registerAssetProtocol（assetRoots 的 generated-images/imported-images 两项换 getter）、exportService、duplicateCheckService、aiService、storageCleanupService（构造参数追加，缺省回退原 paths 函数——保持单测可注入）。
+注入到：main.cjs registerAssetProtocol（assetRoots 的 generated-images/imported-images 两项换 getter）、exportService、duplicateCheckService、aiService、storageCleanupService（构造参数追加，缺省回退原 paths 函数——保持单测可注入）。**main.cjs 与 index.cjs 跨模块注入**：仿照 agentWorkspaceServiceRef 的模块级 ref 模式——index.cjs 初始化后把 getter 写入 main.cjs 导出的 ref 容器（main.cjs 定义 `const assetRootsRef = { generatedImages: null, importedImages: null }; module.exports = { registerAssetProtocol, assetRootsRef }`，index.cjs require 后赋值）；registerAssetProtocol 请求时读 ref（assetRoots 本就请求时求值——main.cjs:262，已核实）。
 
 - [ ] **Step 2: main.cjs 协议处理器（:259-293）**
 
@@ -1125,8 +1181,10 @@ clearOrphanedGeneratedImages(app, db) 改签名为 `clearOrphanedGeneratedImages
 - [ ] **Step 6: mermaidCache 调用点核查**
 
 ```powershell
-Select-String -Path electron/**/*.cjs,electron/*.cjs -Pattern "mermaidCache|getMermaidCacheDir" | Select-Object Path,LineNumber
+Get-ChildItem -Path electron -Recurse -Filter *.cjs | Select-String -Pattern "mermaidCache|getMermaidCacheDir" | Select-Object Path,LineNumber
 ```
+
+（⚠️ PS5.1 下 `Select-String -Path electron/**/*.cjs` 的 `**` 不递归，只搜一层——审计A建议，必须用 Get-ChildItem -Recurse 管道。）
 
 三域 store 内的调用（经 projectApp）已自动项目化 ✓；**全局上下文的调用点**（如全局 app 构造的服务/IPC）改传当前项目资产根（getter 注入同 Step 1）。
 
@@ -1206,9 +1264,9 @@ npm run build
 - [ ] **Step 1: 页面实现（复用 AppDialog / EmptyState / UploadBoard 风格）**
 
 - 卡片：name / gen_summary / last_active_at（相对时间）；点击卡片=switchTo(id)（有运行中任务的卡片加 ⚡ 标记——数据源 Task 13 的 badge state，本任务先不渲染）
-- 新建：`<input type="file" accept=".docx,.doc,.wps,.pdf" multiple>` → `window.yibiao.projects.createFromTenderFile({ filePaths })` → 成功后 switchTo(projectId)（错误 toast 提示并保留在列表页；main 侧失败回滚已在 Task 9 Step 3 的 try/catch 内完成）
+- 新建：**沿用现有文件选择范式**（⚠️ Electron 41 渲染层 `<input type="file">` 拿不到绝对路径——审计B建议③）——参照 DocumentAnalysisPage.tsx:112-113 的拖拽/选择范式（file.getPathForFile，preload:195 已暴露）或主进程 dialog 选文件，拿到路径数组后 → `window.yibiao.projects.createFromTenderFile({ filePaths })` → 成功后 switchTo(projectId)（错误 toast 提示并保留在列表页；main 侧失败回滚已在 Task 9 Step 3 的 try/catch 内完成）
 - 重命名：AppDialog 输入框 → projects.rename → refresh
-- 删除：AppDialog 二次确认（显示项目名+「该项目全部数据将被删除」）→ projects.remove → refresh
+- 删除：AppDialog 二次确认——**先调 `window.yibiao.tasks.getActiveTasks()` 过滤该项目**，有运行中任务时弹窗列明「以下任务将被终止：…」（spec §9 先展示再终止，审计A Issue 3）；确认文案显示项目名+「该项目全部数据将被删除」→ projects.remove → refresh
 - 空状态：EmptyState + 引导上传
 
 - [ ] **Step 2: 构建 + Commit**（`feat: 项目列表页（卡片/新建即上传/重命名/删除二次确认/空态）`）
@@ -1254,10 +1312,11 @@ App.tsx 订阅 onTaskEvent（独立于页面订阅，频道是广播）：维护
 
 **Files:** 无新代码（验证任务；发现问题回改对应 Task）
 
-- [ ] **Step 1: 单测全绿**
+- [ ] **Step 1: 单测全绿（electron-as-node 方式，见测试策略说明）**
 
 ```powershell
-node --test test/projectKeys.test.cjs test/projectRegistry.test.cjs test/projectStoreRegistry.test.cjs test/projectMigration.test.cjs
+node --test test/projectKeys.test.cjs
+$env:ELECTRON_RUN_AS_NODE='1'; npx electron --test test/projectRegistry.test.cjs test/projectStoreRegistry.test.cjs test/projectMigration.test.cjs; $env:ELECTRON_RUN_AS_NODE=$null
 ```
 
 - [ ] **Step 2: dev 启动 + 存量迁移实测（先备份！）**
@@ -1266,7 +1325,7 @@ node --test test/projectKeys.test.cjs test/projectRegistry.test.cjs test/project
 npm run dev
 ```
 
-⚠️ dev 与正式版共用 userData——**启动前手动复制 `%APPDATA%\yibiao-client` 整目录作备份**。Expected: 首启触发存量迁移（日志 `[migration] 存量迁移完成 → 项目 ...`），老项目出现在列表且数据完整（55 节状态、招标文件、导出可用）。**关闭 dev 后核对正式版数据目录已按新结构落位。**
+⚠️ dev 与正式版共用 userData——**启动前：① 完全退出正在运行的正式版易标（含托盘，任务管理器确认无 Yibiao 进程——SQLite WAL 多进程写互踩是 T11 验证的老教训，审计B建议④）；② 手动复制 `%APPDATA%\yibiao-client` 整目录作备份**。Expected: 首启触发存量迁移（日志 `[migration] 存量迁移完成 → 项目 ...`），老项目出现在列表且数据完整（55 节状态、招标文件、导出可用）。**关闭 dev 后核对正式版数据目录已按新结构落位。**
 
 - [ ] **Step 3: CDP 集成验证（复用 `D:\Neo\Neo\tmp\cdp_eval.mjs` 模式，端口 9222）**
 
