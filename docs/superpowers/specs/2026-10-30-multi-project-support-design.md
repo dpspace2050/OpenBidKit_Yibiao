@@ -1,7 +1,7 @@
 # 设计：标书制作多项目支持（multi-project support）
 
 - 日期：2026-10-30
-- 状态：待评审
+- 状态：已过三轮评审 + 验证（见 §14），待 Owner 确认后进入实施计划
 - 分支规划：`feature/multi-project-support`（基于 `feature/selective-section-generation` 之后的主线）
 
 ## 1. 背景与目标
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS projects (
 
 | 域 | 迁入项目库的表 | 迁入项目目录的内容 | 任务类型（参与 projectId 键改造） |
 |---|---|---|---|
-| technical-plan | `technical_plan_meta/_tasks/_outline_nodes/_content_sections/_content_plans/_bid_items/_generation_config/_global_fact_groups` | `technical-plan/tender.md`、`tender-originals/`、`tender-files/`、`original-plan.md`、`bid-template.docx` 等固定路径（现 paths.cjs:46-117） | 正文生成、目录生成、标书分析、全局事实、扩写 |
+| technical-plan | `technical_plan_meta/_tasks/_outline_nodes/_content_sections/_content_plans/_bid_items/_generation_config/_global_fact_groups` | `technical-plan/tender.md`、`tender-originals/`、`tender-files/`、`original-plan.md`、`bid-template.docx` 等（多数定义于 paths.cjs:46-117；**tender-files/ 例外**，是 technicalPlanStore.cjs:34 的 store 内相对路径，实施时勿只在 paths.cjs 找） | 正文生成、目录生成、标书分析、全局事实、扩写 |
 | duplicate-check | `duplicate_check_*` 全系（meta 及 file/document 明细） | `duplicate-check/contents/<fileId>.md` 等 | 查重比对任务 |
 | rejection-check | `rejection_check_*` 全系（meta/extraction/bids 明细） | `rejection-check/bids/<documentId>.md` 等 | 废标检查任务 |
 
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS projects (
 |---|---|
 | better-sqlite3 多连接内存占用 | LRU 上限 8；实测监控 |
 | 双项目同时生成时 AI 并发争抢（共享 10） | v1 接受公平排队；如实测饥饿再做按项目配额（明确延后） |
-| 迁移搬迁失败 | 先备份 + 事务 + 失败回滚，启动标错 |
+| 迁移搬迁失败 | 备份 + journal（status=migrating）+ 幂等续跑，续跑失败从备份还原并标错（§7） |
 | 老版本客户端打开新库结构 | 全局库版本号随之提升，老客户端按现有机制拒绝启动，不产生半兼容状态 |
 
 无未决开放问题。
