@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS projects (
 
 不动：`knowledge_*`、`credential_library_*`、`feasibility_report_*`、`export_templates`、`task_logs`（全局）、logs/ai。
 
+**跨域杂项（同样归属项目）**：
+
+| 项 | 现状 | 归属 |
+|---|---|---|
+| agent 持久任务/会话数据 | pi environment 的 tasksRoot（userData 下固定目录，**在 workspace 外**，见 piPersistentTaskStore.cjs:20-30） | 迁入项目目录（§5.3 的前缀改造后自然落在项目内）；存量归 default 项目 |
+| 三域流程日志 | `userData/logs/<module>`（paths.cjs:128-137，getDeveloperLogsDir） | technical-plan / duplicate-check / rejection-check 三模块日志改按项目路由；logs/ai 保持全局 |
+
 ## 5. 运行时改造（并行核心）
 
 ### 5.1 连接路由
@@ -119,7 +126,7 @@ CREATE TABLE IF NOT EXISTS projects (
 1. 条件：全局库存在 `technical_plan_meta` 有数据 且 `projects` 表为空；
 2. 建 default 项目（name 取 `outline_project_name`，无则"导入的项目"；name_source=ai）；
 3. **先备份**（复用 `backupDatabaseFiles` 机制，sqliteDatabase.cjs）；
-4. 事务内：三域全表复制到 `projects/<defaultId>/project.sqlite`；工作区三域目录移动到项目目录；
+4. 事务内：三域全表复制到 `projects/<defaultId>/project.sqlite`；工作区三域目录、存量 agent 会话（tasksRoot）及三域模块日志目录一并移入 default 项目目录；
 5. 全局库 DROP 三域表 + 清除对应迁移步骤记录；
 6. 失败处理：任一步失败 → 回滚目录移动 + 全局库恢复备份 + 启动标错（不许半迁移状态静默存在）。
 
@@ -136,7 +143,7 @@ CREATE TABLE IF NOT EXISTS projects (
 - **新建项目**：选文件 → 立即写 registry（name=首份文件名去扩展名）→ 建项目库+目录 → 原件复制/解析管线照旧（写入该项目内路径）。项目内追加上传多份招标文件：保留现有 v16 语义。
 - **上传即清空下游**（clearDownstreamFromTender，technicalPlanStore.cjs:1587-1617）：语义不变，作用域自动限定在该项目库内。
 - **重命名**：registry UPDATE，name_source=manual。
-- **删除**：醒目二次确认（有运行中任务先展示并终止）→ 软删 registry + 删除项目目录。不做回收站。
+- **删除**：醒目二次确认（有运行中任务先展示并终止）→ 软删 registry（顺带清空冗余进度字段）+ 删除项目目录。不做回收站。
 - **导出**：文件名规则不变（exportService.cjs:3003），数据源改为当前项目库（technicalPlanExport.cjs:68-171 的读取走项目连接）。
 
 ## 10. 错误处理
