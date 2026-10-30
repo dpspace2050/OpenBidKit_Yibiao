@@ -3,7 +3,24 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 36;
+const schemaVersion = 37;
+
+// 三域表清单（technical_plan 10 + duplicate_check 14 + rejection_check 8）。
+// 这些表归属"项目库"（见 projectSchemaTableGroups / ensureProjectSchemaHealth），
+// 全局库自 v37 起不再持有；存量迁移（复制后 DROP 全局库三域表）以本清单为准。
+const THREE_DOMAIN_TABLES = [
+  'technical_plan_meta', 'technical_plan_generation_config', 'technical_plan_generation_bid_tasks',
+  'technical_plan_generation_reference_docs', 'technical_plan_tasks', 'technical_plan_bid_items',
+  'technical_plan_outline_nodes', 'technical_plan_content_sections', 'technical_plan_content_plans',
+  'technical_plan_global_fact_groups',
+  'duplicate_check_meta', 'duplicate_check_files', 'duplicate_check_tasks', 'duplicate_check_analysis_sections',
+  'duplicate_check_content_files', 'duplicate_check_metadata_items', 'duplicate_check_outline_items',
+  'duplicate_check_outline_groups', 'duplicate_check_outline_pairwise', 'duplicate_check_content_duplicates',
+  'duplicate_check_content_occurrences', 'duplicate_check_image_files', 'duplicate_check_duplicate_images',
+  'duplicate_check_image_occurrences',
+  'rejection_check_meta', 'rejection_check_documents', 'rejection_check_tasks', 'rejection_check_extraction',
+  'rejection_check_results', 'rejection_check_risk_findings', 'rejection_check_typo_findings', 'rejection_check_logic_findings',
+];
 
 // 保存当前工作区的一份开票信息。
 function createOfficialInvoiceSchema(db) {
@@ -1234,7 +1251,10 @@ function createFeasibilityReportSchema(db) {
   `);
 }
 
-const schemaHealthTableGroups = [
+// 项目库专用表健康组：三域（technical_plan / duplicate_check / rejection_check）的建表修复。
+// 全局库的 schemaHealthTableGroups 自 v37 起不再包含三域表——全局库迁移 DROP 三域表后，
+// 全局健康检查不得在全局库重建空表（spec §4.1 红线）。
+const projectSchemaTableGroups = [
   {
     version: 1,
     tables: [
@@ -1282,6 +1302,20 @@ const schemaHealthTableGroups = [
     repair: createRejectionCheckSchema,
   },
   {
+    version: 4,
+    tables: ['technical_plan_global_fact_groups'],
+    repair: createTechnicalPlanGlobalFactsSchema,
+  },
+  {
+    version: 25,
+    tables: ['technical_plan_generation_config', 'technical_plan_generation_bid_tasks', 'technical_plan_generation_reference_docs'],
+    repair: createTechnicalPlanGenerationConfigSchema,
+  },
+];
+
+// 全局库表健康组：仅全局归属的表（知识库 / 导出模板 / 任务日志 / 可研 / 开票 / 资信库）。
+const schemaHealthTableGroups = [
+  {
     version: 3,
     tables: [
       'knowledge_folders',
@@ -1296,11 +1330,6 @@ const schemaHealthTableGroups = [
       'knowledge_match_batches',
     ],
     repair: createKnowledgeBaseSchema,
-  },
-  {
-    version: 4,
-    tables: ['technical_plan_global_fact_groups'],
-    repair: createTechnicalPlanGlobalFactsSchema,
   },
   {
     version: 15,
@@ -1319,11 +1348,6 @@ const schemaHealthTableGroups = [
   },
   { version: 24, tables: ['official_invoice_info'], repair: createOfficialInvoiceSchema },
   {
-    version: 25,
-    tables: ['technical_plan_generation_config', 'technical_plan_generation_bid_tasks', 'technical_plan_generation_reference_docs'],
-    repair: createTechnicalPlanGenerationConfigSchema,
-  },
-  {
     version: 26,
     tables: [
       'credential_library_profile',
@@ -1341,7 +1365,8 @@ function removeKnowledgeMigrationMeta(db) {
   db.exec('DROP TABLE IF EXISTS knowledge_migration_meta;');
 }
 
-const schemaHealthColumnGroups = [
+// 项目库专用列健康组：三域表的补列修复（表名以 technical_plan_ / duplicate_check_ / rejection_check_ 开头）。
+const projectSchemaColumnGroups = [
   {
     version: 1,
     table: 'technical_plan_meta',
@@ -1399,13 +1424,6 @@ const schemaHealthColumnGroups = [
       original_plan_markdown_chars: 'INTEGER NOT NULL DEFAULT 0',
       original_plan_parser_label: 'TEXT',
       original_plan_imported_at: 'TEXT',
-    },
-  },
-  {
-    version: 11,
-    table: 'knowledge_documents',
-    columns: {
-      sort_order: 'INTEGER NOT NULL DEFAULT 0',
     },
   },
   {
@@ -1492,24 +1510,10 @@ const schemaHealthColumnGroups = [
     },
   },
   {
-    version: 27,
-    table: 'credential_library_employees',
-    columns: {
-      id_validity_mode: 'TEXT',
-    },
-  },
-  {
     version: 29,
     table: 'technical_plan_generation_config',
     columns: {
       export_template_id: "TEXT NOT NULL DEFAULT ''",
-    },
-  },
-  {
-    version: 31,
-    table: 'export_templates',
-    columns: {
-      is_system: 'INTEGER NOT NULL DEFAULT 0',
     },
   },
   {
@@ -1539,6 +1543,31 @@ const schemaHealthColumnGroups = [
     table: 'technical_plan_generation_config',
     columns: {
       layout_check: 'INTEGER NOT NULL DEFAULT 0',
+    },
+  },
+];
+
+// 全局库列健康组：仅全局归属的表。
+const schemaHealthColumnGroups = [
+  {
+    version: 11,
+    table: 'knowledge_documents',
+    columns: {
+      sort_order: 'INTEGER NOT NULL DEFAULT 0',
+    },
+  },
+  {
+    version: 27,
+    table: 'credential_library_employees',
+    columns: {
+      id_validity_mode: 'TEXT',
+    },
+  },
+  {
+    version: 31,
+    table: 'export_templates',
+    columns: {
+      is_system: 'INTEGER NOT NULL DEFAULT 0',
     },
   },
 ];
@@ -1601,6 +1630,40 @@ function ensureWorkspaceSchemaHealth(db, targetVersion = schemaVersion, onStatus
   }
   if (targetVersion >= 17 && existingTables.has('technical_plan_content_plans')) {
     removeLegacyTechnicalPlanIllustrationType(db);
+  }
+}
+
+// 项目库健康检查：三域表/列的补建补列（项目库始终按最新结构对待，不做版本栅栏）。
+// 实现与 ensureWorkspaceSchemaHealth 保持同一套容错模式（存在性集合 + 逐列 ALTER + 状态回调）。
+function ensureProjectSchemaHealth(db, onStatus) {
+  let existingTables = getExistingTables(db);
+  for (const group of projectSchemaTableGroups) {
+    if (group.tables.every((tableName) => existingTables.has(tableName))) continue;
+    emitDatabaseStatus(onStatus, {
+      phase: 'repairing',
+      message: '正在修复项目数据库表结构',
+    });
+    group.repair(db);
+    existingTables = getExistingTables(db);
+  }
+
+  const columnCache = new Map();
+  for (const group of projectSchemaColumnGroups) {
+    if (!existingTables.has(group.table)) continue;
+    let existingColumns = columnCache.get(group.table);
+    if (!existingColumns) {
+      existingColumns = getExistingColumns(db, group.table);
+      columnCache.set(group.table, existingColumns);
+    }
+    for (const [columnName, columnType] of Object.entries(group.columns)) {
+      if (existingColumns.has(columnName)) continue;
+      emitDatabaseStatus(onStatus, {
+        phase: 'repairing',
+        message: '正在修复项目数据库字段',
+      });
+      db.exec(`ALTER TABLE ${quoteIdentifier(group.table)} ADD COLUMN ${quoteIdentifier(columnName)} ${columnType}`);
+      existingColumns.add(columnName);
+    }
   }
 }
 
@@ -1781,6 +1844,13 @@ const migrations = [
     description: '技术方案配图比例字段升级为整数并恢复默认 30%',
     up: migrateTechnicalPlanImageQuantity,
   },
+  {
+    // 空迁移纯版本栅栏：三域表健康组已剥离出全局库，老客户端(v36)打开新库(v37)
+    // 会按 applyMigrations 的版本上限检查拒绝启动，防止其健康组在全局库重建三域空表。
+    version: 37,
+    description: '多项目支持：全局库剔除三域表归属（版本栅栏）',
+    up: () => {},
+  },
 ];
 
 function timestampForFileName() {
@@ -1904,4 +1974,6 @@ function createSqliteDatabase(app, options = {}) {
 module.exports = {
   createSqliteDatabase,
   schemaVersion,
+  ensureProjectSchemaHealth,
+  THREE_DOMAIN_TABLES,
 };
