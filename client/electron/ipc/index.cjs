@@ -1,4 +1,6 @@
 const { clipboard, dialog, ipcMain, powerMonitor, shell } = require('electron');
+const fs = require('fs');
+const path = require('path');
 const { registerAgentIpc } = require('./agentIpc.cjs');
 const { registerAiIpc } = require('./aiIpc.cjs');
 const { registerAutoConfirmationIpc } = require('./autoConfirmationIpc.cjs');
@@ -19,6 +21,8 @@ const { registerFeasibilityReportIpc } = require('./feasibilityReportIpc.cjs');
 const { registerTemplateIpc } = require('./templateIpc.cjs');
 const { registerSystemFontIpc } = require('./systemFontIpc.cjs');
 const { registerPluginIpc } = require('./pluginIpc.cjs');
+const { registerProjectsIpc } = require('./projectsIpc.cjs');
+const { createProjectStoreRouting } = require('./projectStoreRouting.cjs');
 const pluginService = require('../services/pluginService.cjs');
 const { createAgentService } = require('../services/agentService.cjs');
 const { createTechnicalPlanExport } = require('../services/technicalPlanExport.cjs');
@@ -30,7 +34,6 @@ const { createDeveloperExpansionReplaceTestService } = require('../services/deve
 const { createDeveloperLayoutFigureService } = require('../services/developerLayoutFigureService.cjs');
 const { createDonationService } = require('../services/donationService.cjs');
 const { createDuplicateCheckService } = require('../services/duplicateCheckService.cjs');
-const { createDuplicateCheckStore } = require('../services/duplicateCheckStore.cjs');
 const { createCheckResultExportService } = require('../services/checkResultExportService.cjs');
 const { createExportService } = require('../services/exportService.cjs');
 const { createFileService } = require('../services/fileService.cjs');
@@ -38,14 +41,15 @@ const { createKnowledgeBaseService } = require('../services/knowledgeBaseService
 const { createKnowledgeBaseStore } = require('../services/knowledgeBaseStore.cjs');
 const { createLicenseService } = require('../services/licenseService.cjs');
 const { createOfficialAccountService } = require('../services/officialAccountService.cjs');
-const { createRejectionCheckStore } = require('../services/rejectionCheckStore.cjs');
+const { createProjectRegistry } = require('../services/projectRegistry.cjs');
+const { createProjectStoreRegistry } = require('../services/projectStoreRegistry.cjs');
+const { runLegacyMigration } = require('../services/projectMigration.cjs');
 const { createSqliteDatabase } = require('../services/sqliteDatabase.cjs');
 const { createSystemFontService } = require('../services/systemFontService.cjs');
 const { clearOrphanedGeneratedImages, clearStalePiTaskArchives, runHistoricalStorageCleanup } = require('../services/storageCleanupService.cjs');
 const { createTaskService } = require('../services/taskService.cjs');
 const { createAgentWorkspaceService } = require('../services/agentWorkspaceService.cjs');
 const { createTaskLogStore } = require('../services/taskLogStore.cjs');
-const { createTechnicalPlanStore } = require('../services/technicalPlanStore.cjs');
 const { createFeasibilityReportStore } = require('../services/feasibilityReportStore.cjs');
 const { createOfficialInvoiceStore } = require('../services/officialInvoiceStore.cjs');
 const { createTemplateStore } = require('../services/templateStore.cjs');
@@ -53,7 +57,7 @@ const { checkRequiredOnlineServices, getRequiredOnlineServiceStatus } = require(
 const { initLocalImageRenderService } = require('../services/localImageRenderService.cjs');
 const { createOpenXmlHelperService } = require('../services/openXmlHelperService.cjs');
 const { cleanupTrashDirSync } = require('../utils/forceRemove.cjs');
-const { getWorkspaceTrashDir } = require('../utils/paths.cjs');
+const { getProjectsRootDir, getWorkspaceDatabasePath, getWorkspaceTrashDir } = require('../utils/paths.cjs');
 
 let pendingUiCurrentView = null;
 let agentWorkspaceServiceRef = null;
@@ -223,6 +227,11 @@ const workspaceDatabaseChannels = [
   'templates:delete',
   'templates:duplicate',
   'templates:render-preview',
+  'projects:list',
+  'projects:set-active',
+  'projects:rename',
+  'projects:remove',
+  'projects:create-from-tender-file',
 ];
 
 function clearWorkspaceDatabaseIpc() {
@@ -281,68 +290,189 @@ function registerWorkspaceDatabaseStatusIpc({ mainWindow }) {
   };
 }
 
-function registerWorkspaceDatabaseServices({ app, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus }) {
+function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus }) {
   const sqliteDatabase = createSqliteDatabase(app, { onStatus: updateStatus });
   runHistoricalStorageCleanup({ app, db: sqliteDatabase.db, configStore, onStatus: updateStatus });
-  clearStalePiTaskArchives(app);
   // 清理上次强制删除时因占用未能物理删除、被移入回收目录的残留
   cleanupTrashDirSync(getWorkspaceTrashDir(app));
+  // 生图孤儿清理依赖全局库的三域表做引用收集，必须在存量迁移 DROP 这些表之前执行。
   clearOrphanedGeneratedImages(app, sqliteDatabase.db);
+
+  // 项目注册表（T2）+ 存量迁移（T8）：三域数据搬进项目目录后才进入项目化世界。
+  const projectRegistry = createProjectRegistry({ db: sqliteDatabase.db });
+  const migrationResult = runLegacyMigration({ app, globalDb: sqliteDatabase.db, registry: projectRegistry, onStatus: (message) => updateStatus({ message }) });
+  if (migrationResult?.fatal) {
+    // 审计B/T8：迁移判死 → 先关全局库连接（Windows 句柄占用），再从备份还原全局库，阻断启动。
+    sqliteDatabase.close();
+    const backupFile = path.join(getProjectsRootDir(app), '.legacy-backup', 'yibiao.sqlite');
+    if (fs.existsSync(backupFile)) {
+      fs.copyFileSync(backupFile, getWorkspaceDatabasePath(app));
+    } else {
+      console.error('[ipc] 存量迁移备份文件不存在，跳过还原', backupFile);
+    }
+    updateStatus({ phase: 'error', ready: false, message: `存量迁移失败，已从备份还原：${migrationResult.error}` });
+    throw new Error(`存量迁移失败: ${migrationResult.error}`);
+  }
+  // 必须在 runLegacyMigration 之后：迁移先把三域会话目录搬进项目目录，再清全局 tasksRoot 的
+  // 陈旧归档（顺序颠倒会把尚未搬走的老会话目录当垃圾清掉）。
+  clearStalePiTaskArchives(app);
+
   const taskLogStore = createTaskLogStore({ db: sqliteDatabase.db });
   const credentialLibraryService = createCredentialLibraryService({ app, db: sqliteDatabase.db });
   const knowledgeBaseStore = createKnowledgeBaseStore({ app, db: sqliteDatabase.db });
   const knowledgeBaseService = createKnowledgeBaseService({ app, aiService, configStore, knowledgeBaseStore });
-  const technicalPlanStore = createTechnicalPlanStore({ app, db: sqliteDatabase.db, fileService, agentService, taskLogStore, configStore });
+  // feasibility 仍为全局域：store 留在全局库；三域 store 全部改由 projectStoreRegistry 按项目构造（T4）。
   const feasibilityReportStore = createFeasibilityReportStore({ app, db: sqliteDatabase.db, fileService, taskLogStore, agentService });
-  const duplicateCheckStore = createDuplicateCheckStore({ app, db: sqliteDatabase.db, taskLogStore });
-  const rejectionCheckStore = createRejectionCheckStore({ app, db: sqliteDatabase.db, fileService, technicalPlanStore, taskLogStore });
   const templateStore = createTemplateStore({ db: sqliteDatabase.db });
   // 系统预设模板的真源在代码里，每次启动对齐一次，保证首启和版本升级都能拿到最新预设。
   templateStore.syncSystemTemplates();
-  const duplicateCheckService = createDuplicateCheckService({ app, configStore, workspaceStore: duplicateCheckStore });
+
+  // taskService 可能早于首个项目上下文打开：onProjectOpened 先经 ref 持有，创建后立刻补跑当前项目恢复。
+  const taskServiceRef = { current: null };
+
+  const projectStoreRegistry = createProjectStoreRegistry({
+    app,
+    registry: projectRegistry,
+    deps: {
+      fileService,
+      agentService,
+      taskLogStore,
+      configStore,
+      // 原 technicalPlanStore.setAgentWorkspaceChangeListener(...) 的单例接线移到 store 构造点（T4 buildContext）。
+      onTechnicalPlanStoreCreated: (technicalPlanStore) => {
+        technicalPlanStore.setAgentWorkspaceChangeListener(() => agentWorkspaceServiceRef?.emitWorkspacesChanged?.());
+      },
+    },
+    onProjectOpened: (projectId) => {
+      try { agentService.restorePrimarySessionForProject?.(projectId); } catch (error) { console.warn('[ipc] 恢复项目主会话失败', error?.message || String(error)); }
+      try { taskServiceRef.current?.recoverInterruptedTasksForProject(projectId); } catch (error) { console.warn('[ipc] 恢复项目中断任务失败', error?.message || String(error)); }
+    },
+  });
+  app.once('will-quit', () => projectStoreRegistry.closeAll());
+
+  // 初始化当前项目：上次使用的项目 > 最近活跃项目 > 无（空态）。只 setCurrent + 显式打开一次上下文，
+  // 此时 taskService 尚未创建（onProjectOpened 只做主会话恢复），中断任务恢复由创建后的补跑完成，
+  // 与 onProjectOpened 的恢复互斥不重入。
+  try {
+    const lastProjectId = configStore.load().last_project_id || null;
+    const activeProjects = projectRegistry.list();
+    const initialProjectId = activeProjects.some((p) => p.id === lastProjectId)
+      ? lastProjectId
+      : (activeProjects[0]?.id || null);
+    if (initialProjectId) {
+      projectStoreRegistry.setCurrent(initialProjectId);
+      projectStoreRegistry.resolveStores(initialProjectId);
+    }
+  } catch (error) {
+    console.warn('[ipc] 初始化当前项目失败', error?.message || String(error));
+  }
+
+  // 隐藏调用面（T9）：以下服务仍按“store 单例”签名构造，改为惰性代理按当前项目解析。
+  // 空态（未选项目）返回空操作 store（方法返回 undefined），与原全局空 store 行为对齐（loadX() || {} 模式）。
+  const VOID_STORE = new Proxy({}, { get: () => () => undefined });
+  const lazyCurrentStore = (pickStore) => new Proxy({}, {
+    get(_target, prop) {
+      let store = null;
+      if (projectStoreRegistry.getCurrentProjectId()) {
+        try { store = pickStore(projectStoreRegistry.resolveStores()); } catch (error) { console.warn('[ipc] 解析当前项目 store 失败', error?.message || String(error)); }
+      }
+      const target = store || VOID_STORE;
+      const value = target[prop];
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+
+  const duplicateCheckService = createDuplicateCheckService({ app, configStore, workspaceStore: lazyCurrentStore((stores) => stores.duplicateCheckStore) });
   const checkResultExportService = createCheckResultExportService({
     app,
     dialog,
-    rejectionCheckStore,
-    duplicateCheckStore,
+    rejectionCheckStore: lazyCurrentStore((stores) => stores.rejectionCheckStore),
+    duplicateCheckStore: lazyCurrentStore((stores) => stores.duplicateCheckStore),
   });
-  const taskService = createTaskService({ templateStore, aiService, agentService, autoConfirmationService, technicalPlanStore, rejectionCheckStore, duplicateCheckStore, feasibilityReportStore, knowledgeBaseService, duplicateCheckService, openXmlHelperService });
-  const agentWorkspaceService = createAgentWorkspaceService({ agentService, taskService, technicalPlanStore, feasibilityReportStore });
+  // 三域 store 闭包参数传 null：storeRegistry 存在时 taskService 的兜底分支不再走到（T6）。
+  const taskService = createTaskService({
+    templateStore,
+    aiService,
+    agentService,
+    autoConfirmationService,
+    technicalPlanStore: null,
+    rejectionCheckStore: null,
+    duplicateCheckStore: null,
+    feasibilityReportStore,
+    storeRegistry: projectStoreRegistry,
+    knowledgeBaseService,
+    duplicateCheckService,
+    openXmlHelperService,
+  });
+  taskServiceRef.current = taskService;
+  // 补跑当前项目的中断任务恢复：上下文已在前面临时打开（缓存命中），不会再次触发 onProjectOpened。
+  if (projectStoreRegistry.getCurrentProjectId()) {
+    try { taskService.recoverInterruptedTasksForProject(projectStoreRegistry.getCurrentProjectId()); } catch (error) { console.warn('[ipc] 补跑项目任务恢复失败', error?.message || String(error)); }
+  }
+  const agentWorkspaceService = createAgentWorkspaceService({ agentService, taskService, technicalPlanStore: lazyCurrentStore((stores) => stores.technicalPlanStore), feasibilityReportStore });
   agentWorkspaceServiceRef = agentWorkspaceService;
-  technicalPlanStore.setAgentWorkspaceChangeListener(() => agentWorkspaceService.emitWorkspacesChanged());
   feasibilityReportStore.setAgentWorkspaceChangeListener(() => agentWorkspaceService.emitWorkspacesChanged());
   if (pendingUiCurrentView) {
     agentWorkspaceService.setCurrentView(pendingUiCurrentView);
   }
 
+  // 三域 IPC 的当前项目路由（resolve + 引用计数包裹）
+  const { resolveCurrentStores, withProjectStores } = createProjectStoreRouting(projectStoreRegistry);
+
+  // 更新 pluginService 的服务引用：三域 store 传“当前项目”解出的实例，切换项目时刷新。
+  const refreshPluginServices = () => {
+    try {
+      const projectId = projectStoreRegistry.getCurrentProjectId();
+      const stores = projectId
+        ? projectStoreRegistry.resolveStores(projectId)
+        : { technicalPlanStore: null, duplicateCheckStore: null, rejectionCheckStore: null };
+      pluginService.updateServices({
+        agentService,
+        taskService,
+        agentWorkspaceService,
+        technicalPlanStore: stores.technicalPlanStore || null,
+        duplicateCheckStore: stores.duplicateCheckStore || null,
+        rejectionCheckStore: stores.rejectionCheckStore || null,
+      });
+    } catch (error) {
+      console.warn('[ipc] 刷新插件服务引用失败', error?.message || String(error));
+    }
+  };
+  // 项目切换：广播给渲染进程（mainWindow 经 registerWorkspaceDatabaseServices 参数传入）+ 刷新插件 store 实例。
+  const onActiveChanged = (projectId) => {
+    sendToWebContents(mainWindow?.webContents, 'projects:active-changed', { projectId: projectId || null });
+    refreshPluginServices();
+  };
+
   clearWorkspaceDatabaseIpc();
+  // registerProjectsIpc 必须在 clearWorkspaceDatabaseIpc() 之后（覆盖 pending 占位 handler）
+  registerProjectsIpc({ app, registry: projectRegistry, storeRegistry: projectStoreRegistry, taskService, configStore, agentService, onActiveChanged });
   registerCredentialLibraryIpc({ credentialLibraryService, configStore });
   registerKnowledgeBaseIpc({ knowledgeBaseService });
-  registerTechnicalPlanIpc({ technicalPlanStore, taskService, agentService, openXmlHelperService });
+  registerTechnicalPlanIpc({ resolveCurrentStores, withProjectStores, taskService, agentService, openXmlHelperService });
   registerFeasibilityReportIpc({ feasibilityReportStore, taskService });
-  registerDuplicateCheckIpc({ duplicateCheckStore, checkResultExportService });
-  registerRejectionCheckIpc({ rejectionCheckStore, taskService, checkResultExportService });
+  registerDuplicateCheckIpc({ resolveCurrentStores, withProjectStores, checkResultExportService });
+  registerRejectionCheckIpc({ resolveCurrentStores, withProjectStores, taskService, checkResultExportService });
   registerTemplateIpc({ templateStore, openXmlHelperService });
   registerOfficialInvoiceIpc({ officialInvoiceStore: createOfficialInvoiceStore({ db: sqliteDatabase.db }) });
   registerTaskIpc({ taskService });
   updateStatus({ phase: 'ready', ready: true, message: '本地数据库已就绪' });
-  
-  // 更新 pluginService 的服务引用
-  pluginService.updateServices({
-    agentService,
-    taskService,
-    agentWorkspaceService,
-    technicalPlanStore,
-    duplicateCheckStore,
-    rejectionCheckStore,
-  });
-  
+
+  refreshPluginServices();
+
   // 在服务就绪后启用已启用的插件
   pluginService.activateEnabledPlugins().catch((error) => {
     console.error('[plugin-service] 启用插件失败:', error);
   });
-  
-  return { sqliteDatabase, technicalPlanExport: createTechnicalPlanExport({ technicalPlanStore, templateStore, agentService, openXmlHelperService }) };
+
+  // 整本导出按“导出时刻的当前项目”解 store 与 projectId（T9；exportService 经 getter 每次导出重新取）。
+  const getTechnicalPlanExport = () => {
+    const projectId = projectStoreRegistry.getCurrentProjectId();
+    const { technicalPlanStore } = projectStoreRegistry.resolveStores(projectId);
+    return createTechnicalPlanExport({ technicalPlanStore, templateStore, agentService, openXmlHelperService, projectId });
+  };
+
+  return { sqliteDatabase, projectStoreRegistry, getTechnicalPlanExport };
 }
 
 function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl, gpuStartupState = {}, gpuTrialArg = '--yibiao-trial-hardware-acceleration', forceDisableGpuArgs = [], openDeveloperTokenStatsWindow, closeDeveloperTokenStatsWindow, openDeveloperAgentMonitorWindow, closeDeveloperAgentMonitorWindow }) {
@@ -363,8 +493,8 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
   const agentService = createAgentService({ app, configStore, aiService, licenseService, autoConfirmationService });
   const fileService = createFileService({ app, configStore });
   const openXmlHelperService = createOpenXmlHelperService({ app, configStore });
-  let technicalPlanExport;
-  const exportService = createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport: () => technicalPlanExport });
+  let getTechnicalPlanExport = null;
+  const exportService = createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport: () => getTechnicalPlanExport?.() || null });
   const systemFontService = createSystemFontService();
   const databaseStatus = registerWorkspaceDatabaseStatusIpc({ mainWindow });
   let workspaceDatabaseStarted = false;
@@ -492,7 +622,7 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
     databaseStatus.updateStatus({ phase: 'checking', ready: false, message: '正在检查本地数据库' });
     setTimeout(() => {
       try {
-        ({ technicalPlanExport } = registerWorkspaceDatabaseServices({ app, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus: databaseStatus.updateStatus }));
+        ({ getTechnicalPlanExport } = registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus: databaseStatus.updateStatus }));
         setTimeout(() => {
           void agentService.warmup?.().catch((error) => {
             console.warn('[agent] warmup failed', error?.message || String(error));

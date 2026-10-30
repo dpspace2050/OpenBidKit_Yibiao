@@ -19,6 +19,8 @@ export type ClientConfigPatch = Partial<Omit<ClientConfig, 'text_model_profiles'
 
 export interface TaskEventTask {
   task_id: string;
+  /** 多项目支持：任务所属项目；全域任务（feasibility 等）为 null。 */
+  project_id?: string | null;
   type: string;
   status: string;
   progress: number;
@@ -28,6 +30,20 @@ export interface TaskEventTask {
   updated_at: string;
   error?: string;
   stats?: unknown;
+}
+
+/** 多项目支持：项目列表项（T9）。openError 非空表示该项目库打开失败（标错隔离，spec §10）。 */
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  name_source: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+  last_active_at: number;
+  current_step?: string | null;
+  gen_summary?: string | null;
+  openError?: string | null;
 }
 
 export interface TaskEvent<TState = unknown, TRejectionCheckState = unknown, TDuplicateCheckState = unknown> {
@@ -608,6 +624,25 @@ export interface YibiaoBridge {
   database: {
     getStatus: () => Promise<WorkspaceDatabaseStatus>;
     onStatus: (callback: (status: WorkspaceDatabaseStatus) => void) => () => void;
+  };
+  projects: {
+    list: () => Promise<{ projects: ProjectInfo[]; activeProjectId: string | null }>;
+    setActive: (projectId: string | null) => Promise<{ ok: boolean }>;
+    rename: (payload: { projectId: string; name: string }) => Promise<{ ok: boolean }>;
+    remove: (payload: { projectId: string }) => Promise<{ ok: boolean }>;
+    createFromTenderFile: (payload: { filePaths?: string[] }) => Promise<{
+      projectId: string;
+      name: string;
+      importResult: {
+        success: boolean;
+        message?: string;
+        markdown?: string;
+        fileName?: string;
+        parserLabel?: string | null;
+      };
+    }>;
+    /** 当前项目变化（切换/新建/删除后置空）时触发。 */
+    onActiveChanged: (callback: (payload: { projectId: string | null }) => void) => () => void;
   };
   ui: {
     setCurrentView: (view: { section: string; step?: string | null }) => Promise<{ success: boolean }>;

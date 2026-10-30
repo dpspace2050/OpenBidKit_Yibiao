@@ -553,6 +553,15 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     return session ? { ...session } : null;
   }
 
+  // 项目删除后清空内存槽（T7 移交，T9 接线）：主会话与抢占序号都按 projectId 分槽，
+  // 不清理会让已删项目占用内存，极端情况下（同 ID 重建）还会让旧会话复活。
+  function disposeProject(projectId) {
+    const slotId = safeText(projectId);
+    if (!slotId) return;
+    primarySessions.delete(slotId);
+    latestPrimaryRequestSequences.delete(slotId);
+  }
+
   function getEntryActiveTask(entry) {
     // 这里只汇总各子任务运行状态；共享 AI 队列在服务级 getStatus 中统一读取。
     const runtimeStatus = entry.runtime ? normalizeRuntimeStatus(entry.runtime.getStatus({ includeProxyStatus: false })) : null;
@@ -981,6 +990,7 @@ function createAgentService({ app, configStore, aiService, licenseService, autoC
     getPrimarySession,
     isPrimarySession,
     restorePrimarySessionForProject,
+    disposeProject,
     onPrimarySessionChanged,
     exportSelfCheckReport,
     close,

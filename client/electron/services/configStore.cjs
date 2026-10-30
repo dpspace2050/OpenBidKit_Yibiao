@@ -518,6 +518,8 @@ function normalizeConfig(config) {
       : defaultConfig.storage_cleanup_version,
     analytics_client_id: source.analytics_client_id || defaultConfig.analytics_client_id,
     analytics_created_at: source.analytics_created_at || defaultConfig.analytics_created_at,
+    // 多项目支持（T9）：上次使用的项目透传持久化，不属于模型/组件配置，不做默认值推导。
+    last_project_id: source.last_project_id ?? null,
   };
 }
 

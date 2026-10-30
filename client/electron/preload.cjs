@@ -70,6 +70,18 @@ const bridge = {
       return () => ipcRenderer.removeListener('workspace-database:status', listener);
     },
   },
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    setActive: (projectId) => ipcRenderer.invoke('projects:set-active', projectId),
+    rename: (payload) => ipcRenderer.invoke('projects:rename', payload),
+    remove: (payload) => ipcRenderer.invoke('projects:remove', payload),
+    createFromTenderFile: (payload) => ipcRenderer.invoke('projects:create-from-tender-file', payload),
+    onActiveChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('projects:active-changed', listener);
+      return () => ipcRenderer.removeListener('projects:active-changed', listener);
+    },
+  },
   ui: {
     setCurrentView: (view) => ipcRenderer.invoke('ui:set-current-view', view),
   },
