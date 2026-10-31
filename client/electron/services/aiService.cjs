@@ -486,8 +486,19 @@ async function downloadImage(url, options = {}) {
   };
 }
 
+// T10：生图落点项目化注入点（createAiService 注入；未注入或抛错时回退全局 workspace 根，单测行为不变）。
+let generatedImagesRootGetter = null;
+
+function resolveGeneratedImagesDir(app) {
+  try {
+    return generatedImagesRootGetter?.() || getGeneratedImagesDir(app);
+  } catch {
+    return getGeneratedImagesDir(app);
+  }
+}
+
 function saveGeneratedImage(app, image) {
-  const imagesDir = getGeneratedImagesDir(app);
+  const imagesDir = resolveGeneratedImagesDir(app);
   fs.mkdirSync(imagesDir, { recursive: true });
   const extension = imageExtensionFromMime(image.mime_type);
   const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}.${extension}`;
@@ -2455,7 +2466,10 @@ async function generateImageWithConfig(app, config, request) {
   throw new Error('当前生图服务商暂不支持正文配图');
 }
 
-function createAiService({ app, configStore }) {
+function createAiService({ app, configStore, getGeneratedImagesRoot } = {}) {
+  // T10：生图磁盘落点改走注入的项目化 getter（有当前项目 → <projectDir>/workspace/generated-images）。
+  // URL 仍为 yibiao-asset://generated-images/<file>（渲染层存量引用兼容），只换磁盘根。
+  generatedImagesRootGetter = typeof getGeneratedImagesRoot === 'function' ? getGeneratedImagesRoot : null;
   const textRequestQueue = createAiRequestQueue({
     defaultLimit: 10,
     getLimit() {

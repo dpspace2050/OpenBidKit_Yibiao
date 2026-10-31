@@ -1529,15 +1529,25 @@ function normalizeImageForDocx(loaded) {
   return { buffer: image.toPNG(), type: 'png' };
 }
 
+// T10：图片资产根项目化注入点（createExportService 注入；未注入或抛错时回退全局 workspace 根）。
+// 导出是长流程：必须请求时求值，跟随导出时刻的当前项目。
+const assetRootsGetters = { generatedImages: null, importedImages: null };
+
+function resolveAssetRootDir(host) {
+  if (host === 'generated-images') {
+    try { return assetRootsGetters.generatedImages?.() || getGeneratedImagesDir(app); } catch { return getGeneratedImagesDir(app); }
+  }
+  if (host === 'imported-images') {
+    try { return assetRootsGetters.importedImages?.() || getImportedImagesDir(app); } catch { return getImportedImagesDir(app); }
+  }
+  return '';
+}
+
 function resolveAssetImagePath(url) {
   if (!app?.getPath) return null;
 
   const assetUrl = new URL(url);
-  const assetRoots = {
-    'generated-images': getGeneratedImagesDir(app),
-    'imported-images': getImportedImagesDir(app),
-  };
-  const rootDir = assetRoots[assetUrl.hostname];
+  const rootDir = resolveAssetRootDir(assetUrl.hostname);
   if (!rootDir) return null;
 
   const relativePath = decodeURIComponent(assetUrl.pathname.replace(/^\/+/, ''));
@@ -1628,7 +1638,8 @@ async function loadImageWithRetry(source, context = {}, options = {}) {
 }
 
 async function resolveMermaidImageForExport(code, context = {}, options = {}) {
-  const cacheEntry = options.cacheEntry || getMermaidCacheEntry(app, code);
+  // T10：本模块持有的是全局 app，mermaid 缓存目录必须显式指向项目化资产根，与 store 侧（projectApp 代理）一致。
+  const cacheEntry = options.cacheEntry || getMermaidCacheEntry(app, code, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
   if (cacheEntry.exists) {
     return {
       source: cacheEntry.assetUrl,
@@ -1673,7 +1684,7 @@ async function resolveMermaidImageForExport(code, context = {}, options = {}) {
   }
 
   try {
-    saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer);
+    saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
   } catch (error) {
     writeExportLog(context, 'export.mermaid.cache_write_failed', {
       cache_hash: cacheEntry.hash,
@@ -2054,7 +2065,7 @@ async function mermaidCodeToDocxBlocks(code, context) {
 
   try {
     // 导出阶段不拦截语法：正文已有代码块则直接尝试本地渲染。
-    cacheEntry = getMermaidCacheEntry(app, value);
+    cacheEntry = getMermaidCacheEntry(app, value, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
     writeExportLog(context, 'export.mermaid.started', {
       mermaid_index: nextIndex,
       total,
@@ -2953,7 +2964,10 @@ async function renderMarkdownForRestrictedHtml(content, assets, context) {
   return $.html();
 }
 
-function createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport } = {}) {
+function createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport, getGeneratedImagesRoot, getImportedImagesRoot } = {}) {
+  // T10：注入项目化资产根 getter（缺省回退全局 paths 函数，保持单测/独立调用行为不变）。
+  assetRootsGetters.generatedImages = typeof getGeneratedImagesRoot === 'function' ? getGeneratedImagesRoot : null;
+  assetRootsGetters.importedImages = typeof getImportedImagesRoot === 'function' ? getImportedImagesRoot : null;
   return {
     async exportWord(payload = {}, onProgress) {
       const technicalExport = payload.source === 'technical-plan' ? getTechnicalPlanExport?.() : null;

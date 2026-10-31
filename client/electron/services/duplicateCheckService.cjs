@@ -2082,13 +2082,23 @@ function isPathInsideDirectory(baseDir, targetPath) {
   return relative === '' || (relative && !relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+// T10：图片资产根项目化注入点（createDuplicateCheckService 注入；未注入或抛错时回退全局 workspace 根）。
+// 查重是长流程：解析必须请求时求值，跟随分析时刻的当前项目。
+const assetRootsGetters = { generatedImages: null, importedImages: null };
+
+function resolveAssetImagesRootDir(app, host) {
+  if (host === 'generated-images') {
+    try { return assetRootsGetters.generatedImages?.() || getGeneratedImagesDir(app); } catch { return getGeneratedImagesDir(app); }
+  }
+  if (host === 'imported-images') {
+    try { return assetRootsGetters.importedImages?.() || getImportedImagesDir(app); } catch { return getImportedImagesDir(app); }
+  }
+  return '';
+}
+
 function resolveAssetPath(app, value) {
   const url = new URL(value);
-  const roots = {
-    'generated-images': getGeneratedImagesDir(app),
-    'imported-images': getImportedImagesDir(app),
-  };
-  const rootDir = roots[url.hostname];
+  const rootDir = resolveAssetImagesRootDir(app, url.hostname);
   if (!rootDir) return '';
   const relativePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
   if (!relativePath) return '';
@@ -2225,7 +2235,10 @@ function loadDeveloperConfig(configStore) {
   }
 }
 
-function createDuplicateCheckService({ app, configStore, workspaceStore } = {}) {
+function createDuplicateCheckService({ app, configStore, workspaceStore, getGeneratedImagesRoot, getImportedImagesRoot } = {}) {
+  // T10：注入项目化资产根 getter（缺省回退全局 paths 函数，保持单测/独立调用行为不变）。
+  assetRootsGetters.generatedImages = typeof getGeneratedImagesRoot === 'function' ? getGeneratedImagesRoot : null;
+  assetRootsGetters.importedImages = typeof getImportedImagesRoot === 'function' ? getImportedImagesRoot : null;
   function analysisProgress(value) {
     if (!value) return 0;
     if (value.status === 'success' || value.status === 'error') return 100;

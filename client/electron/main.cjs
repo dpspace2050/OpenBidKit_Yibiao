@@ -256,14 +256,19 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true },
 }]);
 
+// T10：图片资产根跨模块注入点——ipc/index.cjs 在项目 store registry 就绪后回填项目化 getter。
+// 协议解析必须请求时求值（跟随当前项目切换）；未注入（null，如 IPC 未初始化/单测）时回退全局 workspace 根。
+// credential-library 恒全局，不经此注入。
+const assetRootsRef = { generatedImages: null, importedImages: null };
+
 function registerAssetProtocol() {
   protocol.handle('yibiao-asset', (request) => {
     try {
       const url = new URL(request.url);
       const assetRoots = {
         'credential-library': getCredentialLibraryDir(app),
-        'generated-images': getGeneratedImagesDir(app),
-        'imported-images': getImportedImagesDir(app),
+        'generated-images': assetRootsRef.generatedImages?.() || getGeneratedImagesDir(app),
+        'imported-images': assetRootsRef.importedImages?.() || getImportedImagesDir(app),
       };
       const rootDir = assetRoots[url.hostname];
       if (!rootDir) {
@@ -490,6 +495,7 @@ app.whenReady().then(() => {
   services = registerIpcHandlers({
     app,
     mainWindow,
+    assetRootsRef,
     checkAndDownloadUpdate,
     triggerUpdateDownload,
     quitAndInstall,
@@ -564,3 +570,6 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+
+// T10：暴露资产根注入容器供外部（测试/诊断）读取或重置；正常接线经 registerIpcHandlers 参数传入同一引用。
+module.exports = { registerAssetProtocol, assetRootsRef };

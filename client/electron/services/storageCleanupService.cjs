@@ -1,8 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const Database = require('better-sqlite3');
 const {
   getAgentRuntimeDir,
   getGeneratedImagesDir,
+  getProjectsRootDir,
   getWorkspaceDir,
 } = require('../utils/paths.cjs');
 const {
@@ -76,21 +78,53 @@ function collectGeneratedImageReferences(db) {
   return references;
 }
 
-// 只清理 generated-images 根目录中的旧生图，保留当前业务引用及新版子目录。
-function clearUnreferencedRootGeneratedImages(app, db) {
-  const imagesDir = getGeneratedImagesDir(app);
+// 只读打开项目库收集生图引用；项目库不存在时返回 null（调用侧跳过该项目，绝不清图）。
+function collectProjectGeneratedImageReferences(projectDir) {
+  const dbPath = path.join(projectDir, 'project.sqlite');
+  if (!fs.existsSync(dbPath)) return null;
+  const db = new Database(dbPath);
+  try {
+    db.pragma('query_only = true');
+    return collectGeneratedImageReferences(db);
+  } finally {
+    try { db.close(); } catch {}
+  }
+}
+
+// 只清理 generated-images 根目录中的旧生图文件，保留传入的引用集与子目录（mermaid-cache 等沿现状不动）。
+function clearUnreferencedRootGeneratedImages(imagesDir, references) {
   if (!fs.existsSync(imagesDir)) return;
-  const references = collectGeneratedImageReferences(db);
   for (const entry of fs.readdirSync(imagesDir, { withFileTypes: true })) {
     if (!entry.isFile() || references.has(entry.name)) continue;
     removePath(path.join(imagesDir, entry.name));
   }
 }
 
-// 每次启动清理上次异常中断留下的未引用根目录生图。
-function clearOrphanedGeneratedImages(app, db) {
+// 每次启动清理上次异常中断留下的未引用根目录生图（T10 起逐项目化）。
+// 对每个 active 项目：只读打开项目库收集 technical_plan_outline_nodes 的生图引用，
+// 清理该项目 <projectDir>/workspace/generated-images 根下未引用文件；
+// 引用查询失败的项目跳过并 warn，绝不清图。全局根（迁移后应已空/只剩无项目时期文件）
+// 以所有项目引用并集做一次兜底清理。
+function clearOrphanedGeneratedImages({ app, projects = [] } = {}) {
+  const allReferences = new Set();
+  for (const project of projects) {
+    const projectId = project?.id;
+    if (!projectId) continue;
+    const projectDir = path.join(getProjectsRootDir(app), projectId);
+    try {
+      const references = collectProjectGeneratedImageReferences(projectDir);
+      if (!references) {
+        console.warn(`[storage-cleanup] 项目 ${projectId} 无项目库，跳过该项目生图清理`);
+        continue;
+      }
+      for (const name of references) allReferences.add(name);
+      clearUnreferencedRootGeneratedImages(path.join(projectDir, 'workspace', 'generated-images'), references);
+    } catch (error) {
+      console.warn(`[storage-cleanup] 项目 ${projectId} 生图引用查询失败，跳过该项目清理`, error?.message || String(error));
+    }
+  }
   try {
-    clearUnreferencedRootGeneratedImages(app, db);
+    clearUnreferencedRootGeneratedImages(getGeneratedImagesDir(app), allReferences);
   } catch (error) {
     console.warn('[storage-cleanup] 清理未引用生图失败', error?.message || String(error));
   }
@@ -126,7 +160,7 @@ function runHistoricalStorageCleanup({ app, db, configStore, onStatus }) {
   run('清理废弃工作区状态', () => {
     LEGACY_WORKSPACE_FILES.forEach((fileName) => removePath(path.join(workspaceDir, fileName)));
   });
-  run('清理未引用的旧生图', () => clearUnreferencedRootGeneratedImages(app, db));
+  run('清理未引用的旧生图', () => clearUnreferencedRootGeneratedImages(getGeneratedImagesDir(app), collectGeneratedImageReferences(db)));
 
   if (!failures.length) {
     run('记录历史清理版本', () => configStore.save({ storage_cleanup_version: STORAGE_CLEANUP_VERSION }));

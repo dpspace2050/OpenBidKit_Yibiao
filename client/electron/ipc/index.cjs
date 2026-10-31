@@ -57,7 +57,7 @@ const { checkRequiredOnlineServices, getRequiredOnlineServiceStatus } = require(
 const { initLocalImageRenderService } = require('../services/localImageRenderService.cjs');
 const { createOpenXmlHelperService } = require('../services/openXmlHelperService.cjs');
 const { cleanupTrashDirSync } = require('../utils/forceRemove.cjs');
-const { getProjectsRootDir, getWorkspaceDatabasePath, getWorkspaceTrashDir } = require('../utils/paths.cjs');
+const { getGeneratedImagesDir, getImportedImagesDir, getProjectsRootDir, getWorkspaceDatabasePath, getWorkspaceTrashDir } = require('../utils/paths.cjs');
 
 let pendingUiCurrentView = null;
 let agentWorkspaceServiceRef = null;
@@ -290,13 +290,11 @@ function registerWorkspaceDatabaseStatusIpc({ mainWindow }) {
   };
 }
 
-function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus }) {
+function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus, assetRootsBinding, assetRootsRef }) {
   const sqliteDatabase = createSqliteDatabase(app, { onStatus: updateStatus });
   runHistoricalStorageCleanup({ app, db: sqliteDatabase.db, configStore, onStatus: updateStatus });
   // 清理上次强制删除时因占用未能物理删除、被移入回收目录的残留
   cleanupTrashDirSync(getWorkspaceTrashDir(app));
-  // 生图孤儿清理依赖全局库的三域表做引用收集，必须在存量迁移 DROP 这些表之前执行。
-  clearOrphanedGeneratedImages(app, sqliteDatabase.db);
 
   // 项目注册表（T2）+ 存量迁移（T8）：三域数据搬进项目目录后才进入项目化世界。
   const projectRegistry = createProjectRegistry({ db: sqliteDatabase.db });
@@ -316,6 +314,11 @@ function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiSer
   // 必须在 runLegacyMigration 之后：迁移先把三域会话目录搬进项目目录，再清全局 tasksRoot 的
   // 陈旧归档（顺序颠倒会把尚未搬走的老会话目录当垃圾清掉）。
   clearStalePiTaskArchives(app);
+
+  // 生图孤儿清理（T10 逐项目化）：逐项目只读打开项目库收集引用 + 全局根兜底清理。
+  // 必须在 runLegacyMigration 之后：引用已随三域数据迁入各项目库，全局库三域表已 DROP
+  // （旧的全局库引用查询路径不复存在）；引用查询失败的项目跳过，绝不清图。
+  clearOrphanedGeneratedImages({ app, projects: projectRegistry.list() });
 
   const taskLogStore = createTaskLogStore({ db: sqliteDatabase.db });
   const credentialLibraryService = createCredentialLibraryService({ app, db: sqliteDatabase.db });
@@ -350,6 +353,30 @@ function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiSer
   });
   app.once('will-quit', () => projectStoreRegistry.closeAll());
 
+  // T10：图片资产根项目化——有当前项目时资产根在 <projectDir>/workspace 下，
+  // 无项目回退全局 workspace 根（credential-library 恒全局，不经此路由）。
+  // getter 请求时读 getCurrentProjectId，跟随项目切换。
+  const getProjectGeneratedImagesRoot = () => {
+    const projectId = projectStoreRegistry.getCurrentProjectId();
+    return projectId
+      ? path.join(getProjectsRootDir(app), projectId, 'workspace', 'generated-images')
+      : getGeneratedImagesDir(app);
+  };
+  const getProjectImportedImagesRoot = () => {
+    const projectId = projectStoreRegistry.getCurrentProjectId();
+    return projectId
+      ? path.join(getProjectsRootDir(app), projectId, 'workspace', 'imported-images')
+      : getImportedImagesDir(app);
+  };
+  // 回填晚绑定容器（aiService/exportService 先于 registry 构造，经 wrapper 持有）；
+  // main.cjs 的 yibiao-asset:// 协议处理器跨模块注入：赋函数引用，请求时求值（未注入前回退全局根）。
+  assetRootsBinding.getGeneratedImagesRoot = getProjectGeneratedImagesRoot;
+  assetRootsBinding.getImportedImagesRoot = getProjectImportedImagesRoot;
+  if (assetRootsRef) {
+    assetRootsRef.generatedImages = getProjectGeneratedImagesRoot;
+    assetRootsRef.importedImages = getProjectImportedImagesRoot;
+  }
+
   // 初始化当前项目：上次使用的项目 > 最近活跃项目 > 无（空态）。只 setCurrent + 显式打开一次上下文，
   // 此时 taskService 尚未创建（onProjectOpened 只做主会话恢复），中断任务恢复由创建后的补跑完成，
   // 与 onProjectOpened 的恢复互斥不重入。
@@ -382,7 +409,13 @@ function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiSer
     },
   });
 
-  const duplicateCheckService = createDuplicateCheckService({ app, configStore, workspaceStore: lazyCurrentStore((stores) => stores.duplicateCheckStore) });
+  const duplicateCheckService = createDuplicateCheckService({
+    app,
+    configStore,
+    workspaceStore: lazyCurrentStore((stores) => stores.duplicateCheckStore),
+    getGeneratedImagesRoot: getProjectGeneratedImagesRoot,
+    getImportedImagesRoot: getProjectImportedImagesRoot,
+  });
   const checkResultExportService = createCheckResultExportService({
     app,
     dialog,
@@ -475,13 +508,31 @@ function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiSer
   return { sqliteDatabase, projectStoreRegistry, getTechnicalPlanExport };
 }
 
-function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl, gpuStartupState = {}, gpuTrialArg = '--yibiao-trial-hardware-acceleration', forceDisableGpuArgs = [], openDeveloperTokenStatsWindow, closeDeveloperTokenStatsWindow, openDeveloperAgentMonitorWindow, closeDeveloperAgentMonitorWindow }) {
+function registerIpcHandlers({ app, mainWindow, assetRootsRef, checkAndDownloadUpdate, triggerUpdateDownload, quitAndInstall, getLatestVersion, getUpdateDownloadUrl, gpuStartupState = {}, gpuTrialArg = '--yibiao-trial-hardware-acceleration', forceDisableGpuArgs = [], openDeveloperTokenStatsWindow, closeDeveloperTokenStatsWindow, openDeveloperAgentMonitorWindow, closeDeveloperAgentMonitorWindow }) {
   void checkRequiredOnlineServices();
   const configStore = createConfigStore(app);
+  // T10：图片资产根项目化。projectStoreRegistry 在 registerWorkspaceDatabaseServices 内部才创建，
+  // 而 aiService/exportService 先于此构造——经此稳定容器晚绑定（registry 就绪后回填项目化实现），
+  // 回填前（或实现抛错/无项目）回退全局 workspace 根。
+  const assetRootsBinding = { getGeneratedImagesRoot: null, getImportedImagesRoot: null };
+  const getGeneratedImagesRoot = () => {
+    try {
+      return assetRootsBinding.getGeneratedImagesRoot?.() || getGeneratedImagesDir(app);
+    } catch {
+      return getGeneratedImagesDir(app);
+    }
+  };
+  const getImportedImagesRoot = () => {
+    try {
+      return assetRootsBinding.getImportedImagesRoot?.() || getImportedImagesDir(app);
+    } catch {
+      return getImportedImagesDir(app);
+    }
+  };
   initLocalImageRenderService({ configStore });
   const licenseService = createLicenseService({ app, configStore });
   const officialAccountService = createOfficialAccountService({ app, configStore, powerMonitor });
-  const aiService = createAiService({ app, configStore });
+  const aiService = createAiService({ app, configStore, getGeneratedImagesRoot });
   const developerExpansionReplaceTestService = createDeveloperExpansionReplaceTestService({ aiService });
   const developerLayoutFigureService = createDeveloperLayoutFigureService({ app, aiService });
   const donationService = createDonationService({
@@ -494,7 +545,13 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
   const fileService = createFileService({ app, configStore });
   const openXmlHelperService = createOpenXmlHelperService({ app, configStore });
   let getTechnicalPlanExport = null;
-  const exportService = createExportService({ configStore, openXmlHelperService, getTechnicalPlanExport: () => getTechnicalPlanExport?.() || null });
+  const exportService = createExportService({
+    configStore,
+    openXmlHelperService,
+    getTechnicalPlanExport: () => getTechnicalPlanExport?.() || null,
+    getGeneratedImagesRoot,
+    getImportedImagesRoot,
+  });
   const systemFontService = createSystemFontService();
   const databaseStatus = registerWorkspaceDatabaseStatusIpc({ mainWindow });
   let workspaceDatabaseStarted = false;
@@ -622,7 +679,7 @@ function registerIpcHandlers({ app, mainWindow, checkAndDownloadUpdate, triggerU
     databaseStatus.updateStatus({ phase: 'checking', ready: false, message: '正在检查本地数据库' });
     setTimeout(() => {
       try {
-        ({ getTechnicalPlanExport } = registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus: databaseStatus.updateStatus }));
+        ({ getTechnicalPlanExport } = registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiService, agentService, autoConfirmationService, fileService, openXmlHelperService, updateStatus: databaseStatus.updateStatus, assetRootsBinding, assetRootsRef }));
         setTimeout(() => {
           void agentService.warmup?.().catch((error) => {
             console.warn('[agent] warmup failed', error?.message || String(error));

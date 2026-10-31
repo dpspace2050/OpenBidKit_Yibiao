@@ -27,12 +27,15 @@ function createMermaidCacheHash(code, options = {}) {
   return crypto.createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');
 }
 
-function getMermaidCacheDir(app) {
-  return path.join(getGeneratedImagesDir(app), MERMAID_CACHE_DIR_NAME);
+// T10：options.generatedImagesRoot 允许项目化调用方（持全局 app 的 exportService）显式指定资产根；
+// 缺省沿用 app 推导——全局 app 得全局根，项目 app 代理（projectStoreRegistry 构造 store 时传入）得项目根。
+function getMermaidCacheDir(app, options = {}) {
+  const imagesRoot = options.generatedImagesRoot || getGeneratedImagesDir(app);
+  return path.join(imagesRoot, MERMAID_CACHE_DIR_NAME);
 }
 
-function getMermaidCacheFilePath(app, hash) {
-  return path.join(getMermaidCacheDir(app), `${hash}.png`);
+function getMermaidCacheFilePath(app, hash, options = {}) {
+  return path.join(getMermaidCacheDir(app, options), `${hash}.png`);
 }
 
 function getMermaidCacheAssetUrl(hash) {
@@ -42,7 +45,7 @@ function getMermaidCacheAssetUrl(hash) {
 function getMermaidCacheEntry(app, code, options = {}) {
   const normalizedCode = normalizeMermaidCode(code);
   const hash = createMermaidCacheHash(normalizedCode, options);
-  const filePath = getMermaidCacheFilePath(app, hash);
+  const filePath = getMermaidCacheFilePath(app, hash, options);
   return {
     hash,
     code: normalizedCode,
@@ -52,11 +55,11 @@ function getMermaidCacheEntry(app, code, options = {}) {
   };
 }
 
-function saveMermaidCacheImage(app, hash, buffer) {
+function saveMermaidCacheImage(app, hash, buffer, options = {}) {
   if (!buffer?.length) return null;
-  const cacheDir = getMermaidCacheDir(app);
+  const cacheDir = getMermaidCacheDir(app, options);
   fs.mkdirSync(cacheDir, { recursive: true });
-  const filePath = getMermaidCacheFilePath(app, hash);
+  const filePath = getMermaidCacheFilePath(app, hash, options);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tempPath, Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer));
   fs.renameSync(tempPath, filePath);
