@@ -50,11 +50,12 @@
   opacity: 0.7;
 }
 
-/* 切换项目期间的全屏遮罩：覆盖一切交互（z-index 高于启动广告弹窗的 1201） */
+/* 切换项目期间的全屏遮罩：覆盖一切交互（z-index 高于启动广告弹窗 1201 与 agent 提问弹窗 2000） */
 .project-switching-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  /* 2000 与 --yb-z-agent-question 撞值，统一基于该 token 上浮，保证遮罩盖住提问弹窗 */
+  z-index: calc(var(--yb-z-agent-question, 2000) + 10);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -72,4 +73,288 @@
   flex: 1;
   align-items: center;
   justify-content: center;
+}
+
+/* ============ 项目列表页（T12）：卡片 / 新建入口 / 重命名 / 删除确认 ============ */
+
+/* 页面骨架：content-shell（flex 容器）内纵向铺满，卡片网格区域自行滚动 */
+.project-list-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  min-height: 0;
+}
+
+.project-list-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 2px 4px 0;
+}
+
+/* 与 upload-page-title h2/p 同级的页面标题排版 */
+.project-list-head h2 {
+  margin: 8px 0 0;
+  color: var(--yb-text);
+  font-size: 24px;
+  letter-spacing: -0.035em;
+}
+
+.project-list-head p {
+  margin: 6px 0 0;
+  color: var(--yb-text-soft);
+}
+
+/* 空态卡片撑满列表区并垂直居中 */
+.project-list-page .project-list-empty {
+  flex: 1;
+  align-content: center;
+}
+
+/* 卡片网格：自适应列宽，超出滚动 */
+.project-card-grid {
+  display: grid;
+  flex: 1;
+  align-content: start;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 4px 8px;
+}
+
+/* 项目卡片：与 resource-book-row 同款白卡渐变 + 悬浮上浮反馈 */
+.project-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 150px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 253, 0.86)),
+    radial-gradient(circle at 96% 0%, rgba(33, 116, 253, 0.08), transparent 28%);
+  border: 1px solid var(--yb-border-soft);
+  border-radius: var(--yb-radius-xl);
+  box-shadow: 0 14px 34px rgba(23, 32, 51, 0.04);
+  transition: border-color var(--yb-duration-fast) ease, box-shadow var(--yb-duration-fast) ease, transform var(--yb-duration-fast) ease;
+}
+
+.project-card:hover {
+  border-color: rgba(33, 116, 253, 0.22);
+  box-shadow: 0 18px 42px rgba(33, 116, 253, 0.11);
+  transform: translateY(-1px);
+}
+
+.project-card.is-active {
+  border-color: rgba(33, 116, 253, 0.42);
+}
+
+/* openError 非空：错误态卡片（浅红底 + 禁入） */
+.project-card.is-error,
+.project-card.is-error:hover {
+  background: var(--yb-danger-soft);
+  border-color: var(--yb-danger-border);
+  box-shadow: none;
+  transform: none;
+}
+
+.project-card-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+  padding: 18px 20px 12px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.project-card-open:disabled {
+  cursor: default;
+}
+
+.project-card.is-error .project-card-open {
+  cursor: not-allowed;
+}
+
+.project-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.project-card-name {
+  overflow: hidden;
+  color: var(--yb-text);
+  font-size: 16px;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-card-badge {
+  flex: none;
+  padding: 2px 9px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--yb-primary);
+  border-radius: var(--yb-radius-pill);
+}
+
+.project-card-summary {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--yb-text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.project-card-summary.is-error {
+  color: var(--yb-danger-deep);
+}
+
+.project-card-meta {
+  margin-top: auto;
+  color: var(--yb-text-muted);
+  font-size: 12px;
+}
+
+.project-card-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 8px 12px;
+  border-top: 1px solid var(--yb-border-soft);
+}
+
+.project-card.is-error .project-card-actions {
+  border-top-color: var(--yb-danger-border);
+}
+
+.project-card-action {
+  padding: 4px 10px;
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  border-radius: var(--yb-radius-sm);
+  transition: color var(--yb-duration-fast) ease, background-color var(--yb-duration-fast) ease;
+}
+
+.project-card-action:hover {
+  color: var(--yb-primary);
+  background: rgba(33, 116, 253, 0.09);
+}
+
+.project-card-action.is-danger:hover {
+  color: var(--yb-danger);
+  background: var(--yb-danger-soft);
+}
+
+/* 新建入口卡片：虚线拖放目标，可与卡片网格对齐 */
+.project-create-card {
+  display: flex;
+  min-height: 150px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px;
+  color: var(--yb-text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(33, 116, 253, 0.04);
+  border: 1.5px dashed rgba(33, 116, 253, 0.35);
+  border-radius: var(--yb-radius-xl);
+  transition: border-color var(--yb-duration-fast) ease, background-color var(--yb-duration-fast) ease;
+}
+
+.project-create-card:hover:not(:disabled) {
+  color: var(--yb-primary);
+  background: rgba(33, 116, 253, 0.08);
+  border-color: rgba(33, 116, 253, 0.6);
+}
+
+.project-create-card.is-drag-over {
+  color: var(--yb-primary);
+  background: rgba(33, 116, 253, 0.12);
+  border-color: var(--yb-primary);
+}
+
+.project-create-card:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* 重命名弹窗表单：label + 输入框 + 行内错误 */
+.project-rename-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.project-rename-form label {
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.project-rename-form input {
+  min-height: 38px;
+  padding: 6px 12px;
+  color: var(--yb-text);
+  background: #f4f7fc;
+  border: 1px solid #ccd6e3;
+  border-radius: var(--yb-radius-md);
+  outline: none;
+}
+
+.project-rename-form input:focus-visible {
+  border-color: var(--yb-primary);
+  box-shadow: var(--yb-focus-ring);
+}
+
+.project-rename-form p[role='alert'] {
+  margin: 0;
+  color: var(--yb-danger);
+  font-size: 12px;
+}
+
+/* 删除确认里的运行中任务提示块 */
+.project-delete-tasks {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  color: var(--yb-warning-deep);
+  font-size: 13px;
+  line-height: 1.55;
+  background: var(--yb-warning-soft);
+  border: 1px solid var(--yb-warning-border);
+  border-radius: var(--yb-radius-md);
+}
+
+.project-delete-tasks ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.project-delete-tasks li {
+  margin-top: 2px;
+}
+
+.project-delete-tasks.is-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  color: var(--yb-text-soft);
+  background: none;
+  border: none;
 }

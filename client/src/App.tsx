@@ -24,7 +24,7 @@ function App() {
   const [activeSection, setActiveSection] = useState<SectionId>('bid-generation');
   const [developerMode, setDeveloperMode] = useState(false);
   const leaveGuardRef = useRef<((nextSection?: string) => Promise<boolean>) | null>(null);
-  const { projects, activeProjectId, switching, loaded, switchTo } = useProjects();
+  const { projects, activeProjectId, switching, loaded, switchTo, refresh } = useProjects();
   // 首启自动选中只做一次：用户主动“管理项目”置空 active 后不能回选第一个项目。
   const projectAutoSelectRef = useRef(false);
 
@@ -76,7 +76,7 @@ function App() {
 
   // 切换项目=离开当前 section 的同类守卫语义（如大纲排序未保存时先确认）。
   const requestProjectSwitch = async (projectId: string | null) => {
-    if (projectId === activeProjectId) {
+    if (projectId === activeProjectId || switching) {
       return;
     }
     const allowed = await (leaveGuardRef.current?.('project-switch') ?? Promise.resolve(true));
@@ -122,6 +122,7 @@ function App() {
           }}
           settingsRequest={settingsRequest}
           onSettingsRequestHandled={clearSettingsRequest}
+          projectList={{ projects, activeProjectId, switching, switchTo, refresh }}
         />
       </AppShell>
       {switching && (

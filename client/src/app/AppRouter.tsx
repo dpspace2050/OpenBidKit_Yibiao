@@ -12,7 +12,7 @@ import MyTemplatesPage from '../features/export-format/pages/MyTemplatesPage';
 import DuplicateCheckPage from '../features/duplicate-check/pages/DuplicateCheckPage';
 import CredentialLibraryPage from '../features/credential-library/pages/CredentialLibraryPage';
 import KnowledgeBasePage from '../features/knowledge-base/pages/KnowledgeBasePage';
-import ProjectListPage from '../features/projects/ProjectListPage';
+import { ProjectListPage, type ProjectListPageProps } from '../features/projects/ProjectListPage';
 import RejectionCheckPage from '../features/rejection-check/pages/RejectionCheckPage';
 import ResourcesPage from '../features/resources/pages/ResourcesPage';
 import PluginsPage from '../features/plugins/pages/PluginsPage';
@@ -32,9 +32,11 @@ interface AppRouterProps {
   registerLeaveGuard?: (guard: ((nextSection?: string) => Promise<boolean>) | null) => void;
   settingsRequest?: SettingsPageRequest | null;
   onSettingsRequestHandled?: () => void;
+  /** 多项目支持（T12）：App 持有的项目域状态与操作，下传项目列表页使用。 */
+  projectList: ProjectListPageProps;
 }
 
-function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard, settingsRequest, onSettingsRequestHandled }: AppRouterProps) {
+function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard, settingsRequest, onSettingsRequestHandled, projectList }: AppRouterProps) {
   const activeMenuItem = getAppMenuItemById(activeSection, developerMode);
 
   if (activeMenuItem?.children?.length) {
@@ -50,7 +52,7 @@ function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperM
       // 无激活项目时不挂载 TechnicalPlanHome（挂载即 loadState 会抛“尚未选择项目”），改走项目列表页。
       return activeProjectId !== null
         ? <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} />
-        : <ProjectListPage />;
+        : <ProjectListPage {...projectList} />;
     case 'feasibility-report':
       return <FeasibilityReportHome registerLeaveGuard={registerLeaveGuard} />;
     case 'document-knowledge-base':
