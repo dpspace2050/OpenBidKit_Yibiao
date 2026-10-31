@@ -191,3 +191,53 @@ A 项目库行数与迁移前快照**逐一相等**（outline_nodes=75 / content
 - Electron GUI 子系统 exe 的 stdout 只有重定向/管道才可捕获（PowerShell 直接赋值拿不到输出）——本轮工具链经验
 - `yibiao-asset://` scheme 未开 supportFetchAPI：渲染层 fetch 自定义协议 CORS 失败，验证图片加载需用 img 元素（应用自身加载路径即如此）
 
+---
+
+# 第三轮（P0 修复后）：场景 8/10 复验
+
+> 日期：2026-10-31 晚（第二轮之后）
+> 分支：feature/multi-project-support @ 884e60e（fix：taskService 返回对象补导出三域 cancel 方法，+5 行恰 1 文件）
+> 起点：live userData = 迁移后新结构，仅 A（20261031-bv1vsa）；备份 `%APPDATA%\yibiao-client.bak-multi-20261031-182916` 未动
+> 方式：同前（vite 5173 后台 + electron --remote-debugging-port=9222，CDP Runtime.evaluate 驱动 window.yibiao API）；启动 electron 的 shell 额外注入 `$env:DOTNET_ROOT="$env:LOCALAPPDATA\dotnet10"` 且把 `%LOCALAPPDATA%\dotnet10` 前置到 PATH（本机 .NET SDK 10.0.403 用户级安装在该目录；系统 PATH 的 dotnet 是 Program Files 下仅含 SDK 8.0.422）
+> 产物目录：`D:\Neo\Neo\tmp\yibiao-verify\`（r3-* 文件）
+
+## P0 修复内容（884e60e）
+
+`electron/services/taskService.cjs` 的 createTaskService 返回对象在 getActiveTasks 之后补 4 个方法引用：`cancelTechnicalPlanTasks / cancelRejectionCheckTasks / cancelDuplicateCheckTasks / cancelFeasibilityReportTasks`（第四个同样未导出，一并补上）。函数本体 T6 时已是统一签名 `(reason, { projectId, taskTypes })`，仅缺导出。`node --check` + `npm run build`（tsc --noEmit + vite build）通过。
+
+## 场景 8 复验（删除项目）：✅ PASS（第二轮 P0 缺陷闭环）
+
+| 步骤 | 结果 | 证据 |
+|---|---|---|
+| 造临时项目 | ✅ | 复制 A 的 tender-originals docx 改名「P0复验场景八临时项目.docx」→ `projects.createFromTenderFile`：projectId=20261031-u2xfqi、name=文件名去扩展（name_source=filename）、importResult.success=true（已解析 1 份招标文件） |
+| 附带验证：导入软失败回滚 | ✅ | 首次调用因 CDP 转义吃掉反斜杠传了坏路径 → import 解析 ENOENT → **统一回滚链路实跑**：临时项目注册表落 deleted、目录未留、active 置 null、无幻影条目（dde1d0c 的 main 侧回滚在真实数据上验证通过） |
+| 起运行中任务 | ✅ | `tasks.startBidSectionExtraction({projectId: 临时id})` → running，project_id=临时id（真实 AI 调用进行中） |
+| **删除（上轮断裂点）** | ✅ | `projects.remove({projectId})` → **resolve {ok:true}，耗时 38ms**（上轮在此第一行抛 TypeError） |
+| 运行任务终止 | ✅ | remove 返回后 getActiveTasks=[]，运行中的多标段识别任务被 cancel+waitForSettlement 收干净 |
+| registry 软删 | ✅ | 全局库 projects 表：20261031-u2xfqi status='deleted'（含软删回滚链的 20261031-9u06je 亦为 deleted） |
+| 目录物理删除 | ✅ | `workspace/projects/20261031-u2xfqi` 不存在；projects/ 下仅剩 20261031-bv1vsa（+ .legacy 元数据） |
+| 活跃项目置空链路 | ✅ | 删除时临时项目正为 active → 删除后 activeProjectId=null、user_config.last_project_id=null（与 projectsIpc 设计一致）；随后手动 setActive(A) 恢复 |
+| A 完好（行数抽 3+ 表） | ✅ | A 项目库 11 张关键表行数与删除前基线**逐一相等**：outline_nodes=75 / content_plans=55 / content_sections=55 / bid_items=18 / generation_bid_tasks=18 / global_fact_groups=18 / tasks=4 / 查重 meta=1 / 废标 meta=1+documents=2+extraction=1 |
+| 运行任务弹窗展示链路 | ⏭ 跳过 | 上轮已验证（r2-08-delete-dialog.png：二次确认 + 列出将被终止任务），本轮不重复 |
+
+## 场景 10 复验（A 导出 docx）：✅ PASS（DOTNET_ROOT+PATH 注入解决环境阻断）
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| .NET 10 环境注入 | ✅ | electron 启动 shell：`DOTNET_ROOT=%LOCALAPPDATA%\dotnet10` + 该目录前置 PATH → `execFile('dotnet', ['build', ...])`（openXmlHelperService.cjs:373，shell:false 走 PATH 解析）命中 SDK 10.0.403；不再出现 NETSDK1045 |
+| 导出触发 | ✅ | CDP 直调渲染层同参调用：`export.exportWord({requestId:'r3-export-1', source:'technical-plan'})`（与 TechnicalPlanHome.tsx:688 的真实 UI 调用同构）；inspect 结构检查零问题（无需 confirmStructureIssues 二次确认） |
+| 保存对话框默认文件名 | ✅ 规则符合、取值如实 | Edit(1001) 读得默认名 `标书文档_20261031_202242.docx`——规则 `<项目名>_<YYYYMMDD_HHMMSS>.docx` 成立；但项目名取的是 `outlineData.project_name`（A 真实数据该值为 NULL）→ 落到回退字面量「标书文档」而非注册表里的招标文件名。**与任务预期「项目名=招标文件名」不符**：导出文件名不读注册表项目名，属现有设计（export filename 走 outline 数据），记录待产品定夺 |
+| 文件生成 | ✅ | `D:\Neo\Neo\tmp\yibiao-verify\export\r3-A-export.docx`，30,394,420 字节；result={success:true, path, warnings:[]}，无图片失败告警 |
+| 正文核对 | ✅ | document.xml 解压 1,589,155 字节；`<w:t>` 3059 段 / 正文约 12.4 万字符；开头「内容由 AI 生成 / 投标技术文件 / 第一章 系统总体设计…」，关键词 光储/EPC/第一章/施工/技术方案 全命中——A 的真实目录与正文完整进入导出 |
+| 图片核对（media ≥2） | ✅ | docx zip 内 **16 张 png**（`media/image.png`…`image16.png`，openxmlhelper 的 media 布局在包根 media/ 而非 word/media/，合计约 30MB）——A 的配图真实嵌入 |
+| 多项目路由 | ✅（间接） | 导出内容为 A 的招标/正文数据且图片来自 A 项目任务 workspace，getTechnicalPlanExport 按当前项目（A）解析正确 |
+| 导出后 UI | ✅ | 进度 100% 完成弹层；「远程公告」赞助弹窗随后弹出（已知观察项，未当异常）；截图 r3-10-export-done.png |
+
+## 收尾与现场
+
+1. dev 全关：electron 主进程先 CloseMainWindow 后强杀（当时 MainWindowHandle 被模态占据致优雅关闭未达，最终进程树清零）；vite 停止；端口 5173/9222 均释放；残留核查 `Get-Process electron` 为空
+2. **live userData 保持迁移后新结构，终态**：projects/ 下仅 A；注册表仅 A active；user_config.last_project_id=A；备份目录完好未动；A 项目库 729,088 字节
+3. 工具链新坑（记录）：① `electron --run-as-node <脚本>` 进程跑完不退出且会 spawn GPU/utility 子进程——脚本末尾必须 `process.exit(0)`，或改用 `ELECTRON_RUN_AS_NODE=1` env 方式（第二轮经验仍适用）；本轮 5 个滞留快照进程已全部清理；② CDP Runtime.evaluate 传 Windows 路径必须用正斜杠（反斜杠在 bash+CDP 双层转义下被吃成控制字符）；③ 本轮 cdp.cjs 修复了一个上轮遗留工具 bug：`replMode:true` 会令 `awaitPromise` 静默失效（Promise 一律返回 `{}`），去掉 replMode 后异步表达式才能取值
+4. 第三轮结论：**场景 8/10 双 PASS，第二轮两项未闭环项（1 FAIL + 1 环境阻断）全部清零**；遗留事项仅一条产品决策类观察（导出默认文件名的项目名取值来源），非功能缺陷
+
+
