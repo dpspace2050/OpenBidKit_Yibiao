@@ -194,7 +194,7 @@ export function ProjectListPage({ projects, activeProjectId, switching, switchTo
         return;
       }
       if (!result.importResult.success) {
-        // 软失败（格式不支持/解析为空等）主进程不会回滚：清掉刚建的空项目，留在列表页。
+        // 软失败主进程已统一转 throw 回滚，正常不会再走到这里；remove 留作幂等兜底（防御旧主进程）。
         notifyCreateFailure(result.importResult.message);
         try {
           await window.yibiao?.projects.remove({ projectId: result.projectId });
@@ -208,8 +208,9 @@ export function ProjectListPage({ projects, activeProjectId, switching, switchTo
       // createFromTenderFile 已 setCurrent；switchTo 幂等刷新即可进入新项目工作台。
       await switchTo(result.projectId);
     } catch (error) {
-      // 异常路径主进程已回滚并置空 active。
-      notifyCreateFailure(error instanceof Error ? error.message : '创建项目失败');
+      // 异常/软失败路径主进程均已回滚并置空 active；error.importResult 挂原始解析结果，提示优先取其 message。
+      const importResultMessage = (error as { importResult?: { message?: string } })?.importResult?.message;
+      notifyCreateFailure(importResultMessage || (error instanceof Error ? error.message : '创建项目失败'));
       await refresh();
     } finally {
       setCreating(false);

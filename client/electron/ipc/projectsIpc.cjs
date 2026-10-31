@@ -76,6 +76,12 @@ function registerProjectsIpc({ app, registry, storeRegistry, taskService, config
       emitActive(projectId);
       // setCurrent 已完成：importTenderDocument 内部按当前项目缺省路由（D5③）
       const importResult = await taskService.importTenderDocument(filePaths);
+      if (importResult && importResult.success === false) {
+        // 软失败（格式不支持/解析为空/缺 LibreOffice 等）不返回结果，转 throw 走下方统一回滚。
+        const error = new Error(importResult.message || '招标文件导入失败');
+        error.importResult = importResult; // 挂原始结果，供渲染层展示解析提示
+        throw error;
+      }
       persistLastProject(projectId);
       return { projectId, name, importResult };
     } catch (error) {
