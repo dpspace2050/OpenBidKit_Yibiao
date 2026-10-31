@@ -1927,6 +1927,11 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
     getActiveTasks() {
       return Array.from(activeTasks.values());
     },
+    // 三域 cancel 导出（projects:remove 等项目级操作需要按 projectId 取消并等待任务退出）
+    cancelTechnicalPlanTasks,
+    cancelRejectionCheckTasks,
+    cancelDuplicateCheckTasks,
+    cancelFeasibilityReportTasks,
     // 当前活跃项目（registry 未接线前恒 null）；IPC 层项目化路由用（如 preview-content-word）
     getCurrentProjectId: () => resolveProjectId(),
     // 按项目恢复三域中断任务（T9 接线：打开/切换项目时调用；outline 等待选择场景会自动重启任务）
