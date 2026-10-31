@@ -75,7 +75,12 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
   let projectId = journal?.projectId;
 
   if (!resume) {
-    const meta = globalDb.prepare('SELECT outline_project_name, tender_files_json FROM technical_plan_meta WHERE id = 1').get();
+    // meta 查询单独容错：极端部分 schema（technical_plan_meta 缺列/缺表）裸抛会把
+    // registry.create 之前炸成非粘性失败；meta=null 走 resolveLegacyProjectName 三级回退。
+    let meta = null;
+    try {
+      meta = globalDb.prepare('SELECT outline_project_name, tender_files_json FROM technical_plan_meta WHERE id = 1').get();
+    } catch (_) { /* 部分 schema：meta 缺列/缺表 → null，项目名走回退链 */ }
     const hasData = THREE_DOMAIN_TABLES.some((t) => { try { return globalDb.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n > 0; } catch (_) { return false; } });
     if (!hasData) {
       // 全新安装：迁移数组建出的空三域表直接 DROP（同样受真实 FK 约束，走 FK 安全 DROP）

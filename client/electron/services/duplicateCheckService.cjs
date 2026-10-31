@@ -2289,9 +2289,13 @@ function createDuplicateCheckService({ app, configStore, workspaceStore, getGene
       || '标书查重分析运行中。';
   }
 
-  function isCurrentDuplicateCheckSignature(signature) {
+  // store 缺省回退闭包 workspaceStore（index.cjs 注入的 lazy 当前项目 store）：
+  // 后台查重任务收尾必须传任务自己的 per-task store——任务在项目 B 跑、用户切到 A 期间完成时，
+  // 读闭包 store 会拿 A 的状态比对签名，误判 stale 跳过终态 checkpoint，任务卡 running。
+  function isCurrentDuplicateCheckSignature(signature, store) {
     if (!signature) return true;
-    const current = workspaceStore.loadDuplicateCheck() || {};
+    const source = store || workspaceStore;
+    const current = source.loadDuplicateCheck() || {};
     const currentSignature = createSignature({
       tenderFile: current.tenderFile || null,
       tenderFiles: Array.isArray(current.tenderFiles) ? current.tenderFiles : [],
@@ -2896,7 +2900,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore, getGene
 
       const finalStatus = await run(signature, payload, notifyTask, developerLogger);
       const doneLog = finalStatus === 'success' ? '标书查重分析完成。' : '标书查重分析完成，部分结果失败。';
-      if (!isCurrentDuplicateCheckSignature(signature)) {
+      if (!isCurrentDuplicateCheckSignature(signature, taskWorkspaceStore)) {
         developerLogger.write('duplicate.task.stale_signature', { signature });
         return;
       }
