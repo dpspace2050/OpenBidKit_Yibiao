@@ -2,7 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { nativeImage } = require('electron');
-const { getGeneratedImagesDir } = require('../utils/paths.cjs');
+const { getGeneratedImagesDir, getProjectsRootDir } = require('../utils/paths.cjs');
+const { isValidProjectId } = require('../utils/projectKeys.cjs');
 const { createDeveloperLogger } = require('../utils/developerLog.cjs');
 const { createAiRequestQueue } = require('../utils/aiRequestQueue.cjs');
 const { bindAiRequestActivity, notifyAiResponse, withAiResponseActivity } = require('../utils/aiRequestActivity.cjs');
@@ -486,19 +487,21 @@ async function downloadImage(url, options = {}) {
   };
 }
 
-// T10：生图落点项目化注入点（createAiService 注入；未注入或抛错时回退全局 workspace 根，单测行为不变）。
-let generatedImagesRootGetter = null;
-
-function resolveGeneratedImagesDir(app) {
-  try {
-    return generatedImagesRootGetter?.() || getGeneratedImagesDir(app);
-  } catch {
-    return getGeneratedImagesDir(app);
+// T10b：生图落点按任务作用域路由，与 UI 当前项目解耦。请求携带的 queueScopeId 首段
+// （T6 起格式 `<projectId|_global>:<type>:<taskId>`）为合法项目 ID → 该项目根；
+// `_global` 或无 scope → 全局 workspace 根。三域任务写各自项目根，feasibility/知识库等
+// 全局域任务恒写全局根——即使用户正选中某项目，切走后仍可经解析器的全局根回退解析到。
+function resolveGeneratedImagesDirForRequest(app, request) {
+  const scopeId = String(request?.queueScopeId || request?.queue_scope_id || '').trim();
+  const scopeProjectId = scopeId ? scopeId.split(':')[0] : '';
+  if (scopeProjectId && isValidProjectId(scopeProjectId)) {
+    return path.join(getProjectsRootDir(app), scopeProjectId, 'workspace', 'generated-images');
   }
+  return getGeneratedImagesDir(app);
 }
 
-function saveGeneratedImage(app, image) {
-  const imagesDir = resolveGeneratedImagesDir(app);
+function saveGeneratedImage(app, image, request = null) {
+  const imagesDir = resolveGeneratedImagesDirForRequest(app, request);
   fs.mkdirSync(imagesDir, { recursive: true });
   const extension = imageExtensionFromMime(image.mime_type);
   const fileName = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomUUID()}.${extension}`;
@@ -1857,7 +1860,7 @@ async function generateOpenAICompatibleImage(app, config, request, provider) {
       throw createAiResponseDataError(getOpenAICompatibleImageFailureMessage(responseData, `${meta.label}生图未返回图片数据`), responseData);
     }
 
-    const saved = saveGeneratedImage(app, image);
+    const saved = saveGeneratedImage(app, image, request);
     writeAiLog(app, config, {
       request_id: requestId,
       log_title: logTitle,
@@ -1938,7 +1941,7 @@ async function generateGoogleImage(app, config, request) {
     const saved = saveGeneratedImage(app, {
       buffer: Buffer.from(inlineData.data, 'base64'),
       mime_type: inlineData.mimeType || inlineData.mime_type || 'image/png',
-    });
+    }, request);
     writeAiLog(app, config, {
       request_id: requestId,
       log_title: logTitle,
@@ -2385,7 +2388,7 @@ async function runComfyUIImageGeneration(app, config, request, options = {}) {
       return { responseData, image, workflow_source: template.source };
     }
 
-    const saved = saveGeneratedImage(app, image);
+    const saved = saveGeneratedImage(app, image, request);
     writeAiLog(app, config, {
       request_id: requestId,
       log_title: logTitle,
@@ -2466,10 +2469,10 @@ async function generateImageWithConfig(app, config, request) {
   throw new Error('当前生图服务商暂不支持正文配图');
 }
 
-function createAiService({ app, configStore, getGeneratedImagesRoot } = {}) {
-  // T10：生图磁盘落点改走注入的项目化 getter（有当前项目 → <projectDir>/workspace/generated-images）。
+function createAiService({ app, configStore } = {}) {
+  // T10b：生图磁盘落点按请求级 queueScopeId 路由（见 resolveGeneratedImagesDirForRequest），
+  // 不再注入"UI 当前项目"getter——生图任务的作用域与用户此刻选中的项目无关。
   // URL 仍为 yibiao-asset://generated-images/<file>（渲染层存量引用兼容），只换磁盘根。
-  generatedImagesRootGetter = typeof getGeneratedImagesRoot === 'function' ? getGeneratedImagesRoot : null;
   const textRequestQueue = createAiRequestQueue({
     defaultLimit: 10,
     getLimit() {

@@ -259,19 +259,24 @@ protocol.registerSchemesAsPrivileged([{
 // T10：图片资产根跨模块注入点——ipc/index.cjs 在项目 store registry 就绪后回填项目化 getter。
 // 协议解析必须请求时求值（跟随当前项目切换）；未注入（null，如 IPC 未初始化/单测）时回退全局 workspace 根。
 // credential-library 恒全局，不经此注入。
+// T10b：项目根未命中文件时二级回退全局根（存量/全局域落盘的图），见 registerAssetProtocol。
 const assetRootsRef = { generatedImages: null, importedImages: null };
 
 function registerAssetProtocol() {
   protocol.handle('yibiao-asset', (request) => {
     try {
       const url = new URL(request.url);
-      const assetRoots = {
-        'credential-library': getCredentialLibraryDir(app),
-        'generated-images': assetRootsRef.generatedImages?.() || getGeneratedImagesDir(app),
-        'imported-images': assetRootsRef.importedImages?.() || getImportedImagesDir(app),
+      const globalAssetRoots = {
+        'generated-images': getGeneratedImagesDir(app),
+        'imported-images': getImportedImagesDir(app),
       };
-      const rootDir = assetRoots[url.hostname];
-      if (!rootDir) {
+      const primaryRoots = {
+        'credential-library': getCredentialLibraryDir(app),
+        'generated-images': assetRootsRef.generatedImages?.() || globalAssetRoots['generated-images'],
+        'imported-images': assetRootsRef.importedImages?.() || globalAssetRoots['imported-images'],
+      };
+      const primaryRoot = primaryRoots[url.hostname];
+      if (!primaryRoot) {
         return new Response('Not found', { status: 404 });
       }
 
@@ -280,13 +285,27 @@ function registerAssetProtocol() {
         return new Response('Not found', { status: 404 });
       }
 
-      const baseDir = path.resolve(rootDir);
-      const filePath = path.resolve(baseDir, relativePath);
-      if (filePath !== baseDir && !filePath.startsWith(`${baseDir}${path.sep}`)) {
-        return new Response('Forbidden', { status: 403 });
+      // T10b：主根（当前项目根）未命中时回退全局根再找（存量/全局域落盘的图）。
+      // 每个候选根独立过 resolve + startsWith 防穿越校验，回退不放宽安全约束。
+      const fallbackRoot = globalAssetRoots[url.hostname];
+      const candidateRoots = fallbackRoot && path.resolve(fallbackRoot) !== path.resolve(primaryRoot)
+        ? [primaryRoot, fallbackRoot]
+        : [primaryRoot];
+
+      let filePath = null;
+      for (const rootDir of candidateRoots) {
+        const baseDir = path.resolve(rootDir);
+        const candidate = path.resolve(baseDir, relativePath);
+        if (candidate === baseDir || !candidate.startsWith(`${baseDir}${path.sep}`)) {
+          return new Response('Forbidden', { status: 403 });
+        }
+        if (fs.existsSync(candidate)) {
+          filePath = candidate;
+          break;
+        }
       }
 
-      if (!fs.existsSync(filePath)) {
+      if (!filePath) {
         return new Response('Not found', { status: 404 });
       }
 

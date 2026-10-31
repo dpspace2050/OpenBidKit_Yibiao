@@ -1543,23 +1543,40 @@ function resolveAssetRootDir(host) {
   return '';
 }
 
+// T10b：主根（当前项目根）之后补全局根候选——存量/全局域落盘的图在主根未命中时回退全局根再找。
+function resolveAssetRootCandidates(host) {
+  const primary = resolveAssetRootDir(host);
+  if (!primary) return [];
+  const globalRoot = host === 'generated-images' ? getGeneratedImagesDir(app) : host === 'imported-images' ? getImportedImagesDir(app) : '';
+  const roots = [primary];
+  if (globalRoot && path.resolve(globalRoot) !== path.resolve(primary)) roots.push(globalRoot);
+  return roots;
+}
+
+// T10b：mermaid 缓存根随导出域——技术方案导出走当前项目根（导出时刻的项目语境，与 store 侧一致）；
+// feasibility 导出是全局域（context.feasibility 存在），恒走全局根，不受 UI 当前项目影响。
+function resolveMermaidCacheRootDir(context) {
+  if (context?.feasibility) return getGeneratedImagesDir(app);
+  return resolveAssetRootDir('generated-images');
+}
+
 function resolveAssetImagePath(url) {
   if (!app?.getPath) return null;
 
   const assetUrl = new URL(url);
-  const rootDir = resolveAssetRootDir(assetUrl.hostname);
-  if (!rootDir) return null;
-
   const relativePath = decodeURIComponent(assetUrl.pathname.replace(/^\/+/, ''));
   if (!relativePath) return null;
 
-  const baseDir = path.resolve(rootDir);
-  const resolvedPath = path.resolve(baseDir, relativePath);
-  if (resolvedPath !== baseDir && !resolvedPath.startsWith(`${baseDir}${path.sep}`)) {
-    return null;
+  // 逐根解析：每个候选根都独立过 resolve + startsWith 防穿越校验（回退不放宽安全约束），命中存在的文件即用。
+  for (const rootDir of resolveAssetRootCandidates(assetUrl.hostname)) {
+    const baseDir = path.resolve(rootDir);
+    const resolvedPath = path.resolve(baseDir, relativePath);
+    if (resolvedPath !== baseDir && resolvedPath.startsWith(`${baseDir}${path.sep}`) && fs.existsSync(resolvedPath)) {
+      return resolvedPath;
+    }
   }
 
-  return resolvedPath;
+  return null;
 }
 
 async function loadImage(source, context = {}) {
@@ -1639,7 +1656,8 @@ async function loadImageWithRetry(source, context = {}, options = {}) {
 
 async function resolveMermaidImageForExport(code, context = {}, options = {}) {
   // T10：本模块持有的是全局 app，mermaid 缓存目录必须显式指向项目化资产根，与 store 侧（projectApp 代理）一致。
-  const cacheEntry = options.cacheEntry || getMermaidCacheEntry(app, code, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
+  // T10b：根随导出域解析（见 resolveMermaidCacheRootDir）。
+  const cacheEntry = options.cacheEntry || getMermaidCacheEntry(app, code, { generatedImagesRoot: resolveMermaidCacheRootDir(context) });
   if (cacheEntry.exists) {
     return {
       source: cacheEntry.assetUrl,
@@ -1684,7 +1702,7 @@ async function resolveMermaidImageForExport(code, context = {}, options = {}) {
   }
 
   try {
-    saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
+    saveMermaidCacheImage(app, cacheEntry.hash, loaded.buffer, { generatedImagesRoot: resolveMermaidCacheRootDir(context) });
   } catch (error) {
     writeExportLog(context, 'export.mermaid.cache_write_failed', {
       cache_hash: cacheEntry.hash,
@@ -2065,7 +2083,7 @@ async function mermaidCodeToDocxBlocks(code, context) {
 
   try {
     // 导出阶段不拦截语法：正文已有代码块则直接尝试本地渲染。
-    cacheEntry = getMermaidCacheEntry(app, value, { generatedImagesRoot: resolveAssetRootDir('generated-images') });
+    cacheEntry = getMermaidCacheEntry(app, value, { generatedImagesRoot: resolveMermaidCacheRootDir(context) });
     writeExportLog(context, 'export.mermaid.started', {
       mermaid_index: nextIndex,
       total,

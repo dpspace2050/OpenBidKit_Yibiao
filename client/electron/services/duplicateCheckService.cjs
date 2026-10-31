@@ -2096,15 +2096,34 @@ function resolveAssetImagesRootDir(app, host) {
   return '';
 }
 
-function resolveAssetPath(app, value) {
-  const url = new URL(value);
-  const rootDir = resolveAssetImagesRootDir(app, url.hostname);
-  if (!rootDir) return '';
+// T10b：主根（当前项目根）之后补全局根候选——存量/跨域落盘的图在主根未命中时回退全局根再找。
+function resolveAssetImagesRootCandidates(app, host) {
+  const primary = resolveAssetImagesRootDir(app, host);
+  if (!primary) return [];
+  const globalRoot = host === 'generated-images' ? getGeneratedImagesDir(app) : host === 'imported-images' ? getImportedImagesDir(app) : '';
+  const roots = [primary];
+  if (globalRoot && path.resolve(globalRoot) !== path.resolve(primary)) roots.push(globalRoot);
+  return roots;
+}
+
+// T10b：返回全部合法候选路径（主根在前，全局根兜底在后）。每个候选根独立过 resolve + 目录内校验，
+// 防穿越不因回退而放宽；存在性由调用侧 readFile 逐个试（本模块 fs 为 promises API）。
+function resolveAssetPathCandidates(app, value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return [];
+  }
   const relativePath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
-  if (!relativePath) return '';
-  const baseDir = path.resolve(rootDir);
-  const filePath = path.resolve(baseDir, relativePath);
-  return isPathInsideDirectory(baseDir, filePath) && filePath !== baseDir ? filePath : '';
+  if (!relativePath) return [];
+  const candidates = [];
+  for (const rootDir of resolveAssetImagesRootCandidates(app, url.hostname)) {
+    const baseDir = path.resolve(rootDir);
+    const filePath = path.resolve(baseDir, relativePath);
+    if (isPathInsideDirectory(baseDir, filePath) && filePath !== baseDir) candidates.push(filePath);
+  }
+  return candidates;
 }
 
 async function readImageTargetBuffer(app, target) {
@@ -2113,8 +2132,15 @@ async function readImageTargetBuffer(app, target) {
   const dataMatch = value.match(/^data:image\/[^;]+;base64,(?<data>[A-Za-z0-9+/=\s]+)$/i);
   if (dataMatch?.groups?.data) return Buffer.from(dataMatch.groups.data.replace(/\s+/g, ''), 'base64');
   if (/^yibiao-asset:\/\//i.test(value)) {
-    const filePath = resolveAssetPath(app, value);
-    return filePath ? fs.readFile(filePath) : null;
+    // 主根读失败（文件不在）时依次试全局根回退候选；全部失败返回 null，由调用侧按单图缺失跳过。
+    for (const filePath of resolveAssetPathCandidates(app, value)) {
+      try {
+        return await fs.readFile(filePath);
+      } catch {
+        // 尝试下一个候选根。
+      }
+    }
+    return null;
   }
   if (/^file:\/\//i.test(value)) {
     return fs.readFile(new URL(value));
@@ -2315,6 +2341,9 @@ function createDuplicateCheckService({ app, configStore, workspaceStore, getGene
   async function runContentExtraction(allFiles, webContents, signature, developerLogger, tenderFiles) {
     const config = configStore ? configStore.load() : { components: { file_parser: { provider: 'local' } } };
     const dir = getDuplicateCheckContentDir(app);
+    // T10b：正文提取的导入图随查重域落根（与图片比对解析候选链的主根一致）。每轮提取固定一次，
+    // 避免长任务中途切换项目把同一批图写进两个根。
+    const importedImagesRoot = resolveAssetImagesRootDir(app, 'imported-images');
     await fs.mkdir(dir, { recursive: true });
     const results = [];
     const tenderFileIds = new Set((Array.isArray(tenderFiles) ? tenderFiles : []).map(stableFileId));
@@ -2331,6 +2360,7 @@ function createDuplicateCheckService({ app, configStore, workspaceStore, getGene
         const markdown = (await parseDocumentWithConfig(app, file.file_path, config, {
           assetScope: `duplicate-check-content-${fileId}`,
           preserveImages: true,
+          importedImagesRoot,
         })).trim();
         const contentPath = path.join(dir, `${fileId}.md`);
         await fs.writeFile(contentPath, markdown, 'utf-8');

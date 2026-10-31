@@ -512,8 +512,9 @@ function registerIpcHandlers({ app, mainWindow, assetRootsRef, checkAndDownloadU
   void checkRequiredOnlineServices();
   const configStore = createConfigStore(app);
   // T10：图片资产根项目化。projectStoreRegistry 在 registerWorkspaceDatabaseServices 内部才创建，
-  // 而 aiService/exportService 先于此构造——经此稳定容器晚绑定（registry 就绪后回填项目化实现），
+  // 而 exportService/协议解析器先于此构造——经此稳定容器晚绑定（registry 就绪后回填项目化实现），
   // 回填前（或实现抛错/无项目）回退全局 workspace 根。
+  // （T10b 起 aiService 生图落点不再用此容器：改按请求级 queueScopeId 路由，见 aiService.cjs。）
   const assetRootsBinding = { getGeneratedImagesRoot: null, getImportedImagesRoot: null };
   const getGeneratedImagesRoot = () => {
     try {
@@ -532,7 +533,8 @@ function registerIpcHandlers({ app, mainWindow, assetRootsRef, checkAndDownloadU
   initLocalImageRenderService({ configStore });
   const licenseService = createLicenseService({ app, configStore });
   const officialAccountService = createOfficialAccountService({ app, configStore, powerMonitor });
-  const aiService = createAiService({ app, configStore, getGeneratedImagesRoot });
+  // T10b：aiService 生图落点改按请求级 queueScopeId 路由，不再注入当前项目根 getter。
+  const aiService = createAiService({ app, configStore });
   const developerExpansionReplaceTestService = createDeveloperExpansionReplaceTestService({ aiService });
   const developerLayoutFigureService = createDeveloperLayoutFigureService({ app, aiService });
   const donationService = createDonationService({

@@ -2466,8 +2466,15 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       throw new Error('文件导入服务尚未初始化');
     }
 
+    // T10b：导入图随本 store 的域落根——项目 store 的 app 是 projectApp（项目根 imported-images），
+    // 全局兜底 store（projectId 空）仍落全局根。与 resolveOriginalImagePath/cleanupOriginalImageBatches 的根一致。
     const result = fileService.importTechnicalPlanDocument
-      ? await fileService.importTechnicalPlanDocument('原方案', { filePaths, preserveImages: true, assetScopePrefix: 'technical-plan-original' })
+      ? await fileService.importTechnicalPlanDocument('原方案', {
+        filePaths,
+        preserveImages: true,
+        assetScopePrefix: 'technical-plan-original',
+        importedImagesRoot: getImportedImagesDir(app),
+      })
       : await importer({ filePaths });
     if (!result?.success || !result.file_content) {
       return {

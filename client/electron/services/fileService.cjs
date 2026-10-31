@@ -338,12 +338,14 @@ function stripMarkdownImages(text) {
     .replace(/\n{3,}/g, '\n\n');
 }
 
-function createAssetContext(app, scope = 'documents') {
+// T10b：importedImagesRoot 允许调用方按域覆盖导入图落盘根（三域 store 传各自项目根，
+// feasibility/知识库等全局域不传走全局 app 根）。URL 仍是 yibiao-asset://imported-images/<batchId>/<file>。
+function createAssetContext(app, scope = 'documents', importedImagesRoot = null) {
   if (!app?.getPath) return null;
   const safeScope = String(scope || 'documents').replace(/[^A-Za-z0-9._-]+/g, '_') || 'documents';
   const batchId = `${safeScope}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
   return {
-    baseDir: path.join(getImportedImagesDir(app), batchId),
+    baseDir: path.join(importedImagesRoot || getImportedImagesDir(app), batchId),
     urlPrefix: `yibiao-asset://imported-images/${encodeURIComponent(batchId)}`,
     index: 0,
   };
@@ -550,7 +552,7 @@ async function parseDocumentWithConfig(app, filePath, config, options = {}) {
   }
   const provider = parser.provider;
   const preserveImages = options.preserveImages === true;
-  const assets = preserveImages ? createAssetContext(app, options.assetScope || 'documents') : null;
+  const assets = preserveImages ? createAssetContext(app, options.assetScope || 'documents', options.importedImagesRoot || null) : null;
   const parseOptions = { preserveImages, assets, imageResolver: createImageResolver(assets) };
   let markdown = '';
   try {
@@ -631,6 +633,7 @@ const config = configStore ? configStore.load() : { components: { file_parser: {
         fileContent = (await parseDocumentWithConfig(app, filePath, config, {
           assetScope: `${options?.assetScopePrefix || 'technical-plan'}-${assetHash}`,
           preserveImages: options.preserveImages === true,
+          importedImagesRoot: options.importedImagesRoot || null,
         })).trim();
       } catch (error) {
         errors.push(`${path.basename(filePath)}：${formatImportError(error, filePath)}`);
