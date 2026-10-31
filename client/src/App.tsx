@@ -6,7 +6,10 @@ import RequiredOnlineServicesPrompt from './app/RequiredOnlineServicesPrompt';
 import UpdateNotifier from './app/UpdateNotifier';
 import { useTextModelSetupRedirect } from './app/useTextModelSetupRedirect';
 import AppShell from './components/AppShell';
+import ProjectSwitcher from './features/projects/ProjectSwitcher';
+import { useProjects } from './features/projects/useProjects';
 import { trackAppOpen, trackConfigUsage, trackPageView } from './shared/analytics/analytics';
+import { InlineSpinner } from './shared/ui';
 import type { SectionId } from './shared/types/navigation';
 
 function isDeveloperSection(section: SectionId) {
@@ -21,6 +24,9 @@ function App() {
   const [activeSection, setActiveSection] = useState<SectionId>('bid-generation');
   const [developerMode, setDeveloperMode] = useState(false);
   const leaveGuardRef = useRef<((nextSection?: string) => Promise<boolean>) | null>(null);
+  const { projects, activeProjectId, switching, loaded, switchTo } = useProjects();
+  // 首启自动选中只做一次：用户主动“管理项目”置空 active 后不能回选第一个项目。
+  const projectAutoSelectRef = useRef(false);
 
   useEffect(() => {
     trackAppOpen();
@@ -45,6 +51,17 @@ function App() {
     }
   }, [activeSection, developerMode]);
 
+  // 首次加载完成后：无激活项目且列表非空 → 自动选中第一个项目；列表为空则留在项目列表页（T12）。
+  useEffect(() => {
+    if (!loaded || projectAutoSelectRef.current) {
+      return;
+    }
+    projectAutoSelectRef.current = true;
+    if (activeProjectId === null && projects.length > 0) {
+      switchTo(projects[0].id).catch((error) => console.warn('自动选中项目失败', error));
+    }
+  }, [loaded, activeProjectId, projects, switchTo]);
+
   const requestSectionChange = async (section: SectionId) => {
     if (section === activeSection) {
       return true;
@@ -57,6 +74,22 @@ function App() {
   };
   const { settingsRequest, clearSettingsRequest } = useTextModelSetupRedirect(requestSectionChange);
 
+  // 切换项目=离开当前 section 的同类守卫语义（如大纲排序未保存时先确认）。
+  const requestProjectSwitch = async (projectId: string | null) => {
+    if (projectId === activeProjectId) {
+      return;
+    }
+    const allowed = await (leaveGuardRef.current?.('project-switch') ?? Promise.resolve(true));
+    if (!allowed) {
+      return;
+    }
+    try {
+      await switchTo(projectId);
+    } catch (error) {
+      console.warn('切换项目失败', error);
+    }
+  };
+
   return (
     <>
       <GpuHardwareAccelerationPrompt />
@@ -66,10 +99,21 @@ function App() {
       <AppShell
         activeSection={activeSection}
         developerMode={developerMode}
+        projectSwitcher={(
+          <ProjectSwitcher
+            projects={projects}
+            activeProjectId={activeProjectId}
+            switching={switching}
+            onSwitch={(projectId) => { void requestProjectSwitch(projectId); }}
+          />
+        )}
         onSectionChange={(section) => { void requestSectionChange(section); }}
       >
+        {/* key=激活项目：切换时整树重挂载，三域页面全部重新 hydrate。 */}
         <AppRouter
+          key={activeProjectId ?? 'none'}
           activeSection={activeSection}
+          activeProjectId={activeProjectId}
           developerMode={developerMode}
           onDeveloperModeChange={setDeveloperMode}
           onSectionChange={(section) => { void requestSectionChange(section); }}
@@ -80,6 +124,12 @@ function App() {
           onSettingsRequestHandled={clearSettingsRequest}
         />
       </AppShell>
+      {switching && (
+        <div className="project-switching-overlay" role="status" aria-live="polite">
+          <InlineSpinner />
+          <span>正在切换项目…</span>
+        </div>
+      )}
     </>
   );
 }

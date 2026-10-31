@@ -8,10 +8,12 @@ interface AppShellProps {
   activeSection: SectionId;
   children: ReactNode;
   developerMode: boolean;
+  /** 顶栏项目切换器（多项目支持 T11），由 App 注入以复用切换守卫。 */
+  projectSwitcher?: ReactNode;
   onSectionChange: (section: SectionId) => void;
 }
 
-function AppShell({ activeSection, children, developerMode, onSectionChange }: AppShellProps) {
+function AppShell({ activeSection, children, developerMode, projectSwitcher, onSectionChange }: AppShellProps) {
   const isMac = navigator.platform.toLowerCase().includes('mac');
 
   return (
@@ -20,6 +22,7 @@ function AppShell({ activeSection, children, developerMode, onSectionChange }: A
         <Sidebar activeSection={activeSection} developerMode={developerMode} onSectionChange={onSectionChange} />
 
         <main className="main-area">
+          {projectSwitcher != null && <div className="project-switcher-bar">{projectSwitcher}</div>}
           <AgentRuntimeStatusBar />
           <section className="content-shell" aria-label="主内容">
             {children}

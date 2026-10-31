@@ -1,0 +1,75 @@
+/* 多项目支持（T11）：顶栏项目切换器 + 切换遮罩 + 无项目空态容器 */
+
+/* 顶栏项目切换条：与 agent-runtime-status-bar 同款白色卡片，置于主区最上方 */
+.project-switcher-bar {
+  display: flex;
+  align-items: center;
+  margin: 18px 42px 0;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(228, 233, 240, 0.92);
+  border-radius: var(--yb-radius-lg);
+  box-shadow: 0 16px 34px rgba(36, 48, 72, 0.08);
+}
+
+.project-switcher {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.project-switcher-label {
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.project-switcher-select {
+  min-width: 220px;
+  max-width: 380px;
+  min-height: 34px;
+  padding: 6px 10px;
+  color: var(--yb-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  background: #f4f7fc;
+  border: 1px solid #ccd6e3;
+  border-radius: var(--yb-radius-md);
+  outline: none;
+}
+
+.project-switcher-select:focus-visible {
+  border-color: var(--yb-primary);
+}
+
+.project-switcher-select:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+/* 切换项目期间的全屏遮罩：覆盖一切交互（z-index 高于启动广告弹窗的 1201） */
+.project-switching-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--yb-text);
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(244, 248, 255, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+/* duplicate-check / rejection-check 无项目时的空态容器：撑满内容区并居中卡片 */
+.project-required-page {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}

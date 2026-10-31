@@ -12,16 +12,20 @@ import MyTemplatesPage from '../features/export-format/pages/MyTemplatesPage';
 import DuplicateCheckPage from '../features/duplicate-check/pages/DuplicateCheckPage';
 import CredentialLibraryPage from '../features/credential-library/pages/CredentialLibraryPage';
 import KnowledgeBasePage from '../features/knowledge-base/pages/KnowledgeBasePage';
+import ProjectListPage from '../features/projects/ProjectListPage';
 import RejectionCheckPage from '../features/rejection-check/pages/RejectionCheckPage';
 import ResourcesPage from '../features/resources/pages/ResourcesPage';
 import PluginsPage from '../features/plugins/pages/PluginsPage';
 import SettingsPage from '../features/settings/pages/SettingsPage';
 import TechnicalPlanHome from '../features/technical-plan/pages/TechnicalPlanHome';
 import FeasibilityReportHome from '../features/feasibility-report/pages/FeasibilityReportHome';
+import { EmptyState } from '../shared/ui';
 import SecondaryMenuPage from '../shared/ui/SecondaryMenuPage';
 
 interface AppRouterProps {
   activeSection: SectionId;
+  /** 多项目支持（T11）：当前激活项目；null 时三域页面不挂载（改走列表页/空态分流）。 */
+  activeProjectId: string | null;
   developerMode: boolean;
   onDeveloperModeChange: (developerMode: boolean) => void;
   onSectionChange: (section: SectionId) => void;
@@ -30,7 +34,7 @@ interface AppRouterProps {
   onSettingsRequestHandled?: () => void;
 }
 
-function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard, settingsRequest, onSettingsRequestHandled }: AppRouterProps) {
+function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard, settingsRequest, onSettingsRequestHandled }: AppRouterProps) {
   const activeMenuItem = getAppMenuItemById(activeSection, developerMode);
 
   if (activeMenuItem?.children?.length) {
@@ -43,7 +47,10 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
 
   switch (activeSection) {
     case 'technical-plan':
-      return <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} />;
+      // 无激活项目时不挂载 TechnicalPlanHome（挂载即 loadState 会抛“尚未选择项目”），改走项目列表页。
+      return activeProjectId !== null
+        ? <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} />
+        : <ProjectListPage />;
     case 'feasibility-report':
       return <FeasibilityReportHome registerLeaveGuard={registerLeaveGuard} />;
     case 'document-knowledge-base':
@@ -55,9 +62,21 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
     case 'plugin-manager':
       return <PluginsPage />;
     case 'duplicate-check':
-      return <DuplicateCheckPage />;
+      return activeProjectId !== null
+        ? <DuplicateCheckPage />
+        : (
+          <div className="project-required-page">
+            <EmptyState title="请先选择项目" hint="标书查重工作区属于具体项目，请先在顶部切换或新建项目。" />
+          </div>
+        );
     case 'rejection-check':
-      return <RejectionCheckPage />;
+      return activeProjectId !== null
+        ? <RejectionCheckPage />
+        : (
+          <div className="project-required-page">
+            <EmptyState title="请先选择项目" hint="废标检查工作区属于具体项目，请先在顶部切换或新建项目。" />
+          </div>
+        );
     case 'template-settings':
       return <MyTemplatesPage />;
     case 'bid-opportunity':
