@@ -51,7 +51,7 @@ function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperM
     case 'technical-plan':
       // 无激活项目时不挂载 TechnicalPlanHome（挂载即 loadState 会抛“尚未选择项目”），改走项目列表页。
       return activeProjectId !== null
-        ? <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} />
+        ? <TechnicalPlanHome registerLeaveGuard={registerLeaveGuard} activeProjectId={activeProjectId} />
         : <ProjectListPage {...projectList} />;
     case 'feasibility-report':
       return <FeasibilityReportHome registerLeaveGuard={registerLeaveGuard} />;
@@ -65,7 +65,7 @@ function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperM
       return <PluginsPage />;
     case 'duplicate-check':
       return activeProjectId !== null
-        ? <DuplicateCheckPage />
+        ? <DuplicateCheckPage activeProjectId={activeProjectId} />
         : (
           <div className="project-required-page">
             <EmptyState title="请先选择项目" hint="标书查重工作区属于具体项目，请先在顶部切换或新建项目。" />
@@ -73,7 +73,7 @@ function AppRouter({ activeSection, activeProjectId, developerMode, onDeveloperM
         );
     case 'rejection-check':
       return activeProjectId !== null
-        ? <RejectionCheckPage />
+        ? <RejectionCheckPage activeProjectId={activeProjectId} />
         : (
           <div className="project-required-page">
             <EmptyState title="请先选择项目" hint="废标检查工作区属于具体项目，请先在顶部切换或新建项目。" />

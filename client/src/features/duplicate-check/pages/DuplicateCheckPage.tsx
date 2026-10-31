@@ -593,7 +593,12 @@ function DuplicateAnalysisPane({ activeTab, onTabChange, metadataAnalysis, outli
   );
 }
 
-function DuplicateCheckPage() {
+interface DuplicateCheckPageProps {
+  /** 多项目支持（T13）：当前激活项目，用于过滤其他项目的任务事件；空态为 null。 */
+  activeProjectId?: string | null;
+}
+
+function DuplicateCheckPage({ activeProjectId = null }: DuplicateCheckPageProps) {
   const [tenderFile, setTenderFile] = useState<LocalFileSelection | null>(null);
   const [tenderFiles, setTenderFiles] = useState<LocalFileSelection[]>([]);
   const [activeTenderFileId, setActiveTenderFileId] = useState('');
@@ -614,6 +619,11 @@ function DuplicateCheckPage() {
   const currentAnalysisSignatureRef = useRef('');
   const hydratedRef = useRef(false);
   const documentParseNoticeIdsRef = useRef(new Set<string>());
+  // 事件过滤（T13）：回调里读 ref 而非闭包 prop，避免订阅 effect 因项目切换频繁重挂。
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
   const { showToast } = useToast();
   const { showDocumentParseNotice } = useDocumentParseNotice();
 
@@ -690,6 +700,9 @@ function DuplicateCheckPage() {
 
   useEffect(() => {
     const unsubscribe = window.yibiao?.tasks?.onTaskEvent<unknown, unknown, DuplicateCheckWorkspaceState>((event) => {
+      // 事件过滤（T13）：跨项目事件只更新归属页面，当前查重工作台只消费本项目的状态与补丁。
+      const eventProjectId = (event?.task as { project_id?: string | null } | undefined)?.project_id ?? null;
+      if (eventProjectId && activeProjectIdRef.current && eventProjectId !== activeProjectIdRef.current) return;
       const state = event?.duplicateCheck;
       const patch = event?.duplicateCheckPatch;
       if (!state && !patch) return;

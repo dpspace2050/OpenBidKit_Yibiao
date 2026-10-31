@@ -465,9 +465,18 @@ function mapOutlineItems(items, mapper) {
   });
 }
 
-function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogStore, configStore, projectId = null }) {
+function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogStore, configStore, projectId = null, onProjectNameExtracted }) {
   // 项目内 store 清理 Agent 持久会话时用项目前缀键；全局兜底 store（projectId 空）保持原键。
   const agentTaskKey = (taskKey) => projectTaskKey(projectId, taskKey);
+  // 多项目支持（T13）：outline 落库提取到项目名后回调（index.cjs 注入 projectRegistry.updateNameFromAi）。
+  function notifyProjectNameExtracted(name) {
+    if (!projectId || !name || typeof onProjectNameExtracted !== 'function') return;
+    try {
+      onProjectNameExtracted(projectId, name);
+    } catch (error) {
+      console.warn('[technical-plan] AI 项目名回写回调失败:', error?.message || String(error));
+    }
+  }
   function deleteOutlineAgentTask() {
     agentService.deletePersistentTask(agentTaskKey(OUTLINE_AGENT_TASK_KEY));
     agentService.deletePersistentTask(agentTaskKey(TEMPLATE_EXTRACTION_AGENT_TASK_KEY));
@@ -1373,6 +1382,8 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       outline_project_name: outlineData.project_name || null,
       outline_project_overview: outlineData.project_overview || null,
     });
+    // T13：AI 提取的项目名成功落库后回写项目注册表（手动改名的项目 registry 内部自动跳过）。
+    if (outlineData.project_name) notifyProjectNameExtracted(String(outlineData.project_name));
   }
 
   function loadContentSections(outlineData) {

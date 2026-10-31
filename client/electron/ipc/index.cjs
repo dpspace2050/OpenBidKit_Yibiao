@@ -345,6 +345,8 @@ function registerWorkspaceDatabaseServices({ app, mainWindow, configStore, aiSer
       onTechnicalPlanStoreCreated: (technicalPlanStore) => {
         technicalPlanStore.setAgentWorkspaceChangeListener(() => agentWorkspaceServiceRef?.emitWorkspacesChanged?.());
       },
+      // T13：outline 落库提取到项目名 → 回写项目注册表；name_source=manual 的项目 registry 内部自动跳过。
+      onProjectNameExtracted: (projectId, name) => projectRegistry.updateNameFromAi(projectId, name),
     },
     onProjectOpened: (projectId) => {
       try { agentService.restorePrimarySessionForProject?.(projectId); } catch (error) { console.warn('[ipc] 恢复项目主会话失败', error?.message || String(error)); }

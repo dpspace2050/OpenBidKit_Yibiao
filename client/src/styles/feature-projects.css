@@ -4,12 +4,98 @@
 .project-switcher-bar {
   display: flex;
   align-items: center;
+  gap: 12px;
   margin: 18px 42px 0;
   padding: 8px 14px;
   background: rgba(255, 255, 255, 0.88);
   border: 1px solid rgba(228, 233, 240, 0.92);
   border-radius: var(--yb-radius-lg);
   box-shadow: 0 16px 34px rgba(36, 48, 72, 0.08);
+}
+
+/* ============ 后台项目运行角标（T13）============ */
+
+.project-running-badge {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.project-running-badge-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 12px;
+  color: var(--yb-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: rgba(255, 176, 32, 0.12);
+  border: 1px solid rgba(230, 150, 24, 0.38);
+  border-radius: var(--yb-radius-pill);
+  cursor: pointer;
+  transition: background-color var(--yb-duration-fast) ease;
+}
+
+.project-running-badge-toggle:hover,
+.project-running-badge.is-open .project-running-badge-toggle {
+  background: rgba(255, 176, 32, 0.2);
+}
+
+.project-running-badge-pulse {
+  color: #e08a00;
+}
+
+/* 运行中项目下拉：hover 或 is-open 时展开，点项目名直达切换 */
+.project-running-badge-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  min-width: 240px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(228, 233, 240, 0.92);
+  border-radius: var(--yb-radius-lg);
+  box-shadow: 0 18px 40px rgba(36, 48, 72, 0.14);
+}
+
+.project-running-badge:hover .project-running-badge-menu,
+.project-running-badge.is-open .project-running-badge-menu {
+  display: block;
+}
+
+.project-running-badge-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  color: var(--yb-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--yb-radius-md);
+  cursor: pointer;
+}
+
+.project-running-badge-menu button:hover {
+  background: rgba(33, 116, 253, 0.08);
+}
+
+.project-running-badge-menu button small {
+  flex: none;
+  color: var(--yb-text-muted);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .project-switcher {

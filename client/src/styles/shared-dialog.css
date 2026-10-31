@@ -292,6 +292,14 @@
   flex: 0 0 auto;
 }
 
+/* 多项目支持（T13）：提问弹窗头部显示问题归属项目名（全域任务不显示）。 */
+.agent-question-project {
+  margin: 0 0 6px;
+  color: var(--yb-text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .agent-question-head h2 {
   margin: 0;
   color: var(--yb-text);

@@ -17,6 +17,8 @@ import { ExportTemplateEditorDialog } from '../../export-format/pages/ExportForm
 
 interface TechnicalPlanHomeProps {
   registerLeaveGuard?: (guard: ((nextSection?: string) => Promise<boolean>) | null) => void;
+  /** 多项目支持（T13）：当前激活项目，用于过滤其他项目的任务事件；空态为 null。 */
+  activeProjectId?: string | null;
 }
 
 interface OutlineSortGuard {
@@ -169,7 +171,7 @@ function updateOutlineItemContent(items: OutlineItem[], itemId: string, content:
   });
 }
 
-function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
+function TechnicalPlanHome({ registerLeaveGuard, activeProjectId = null }: TechnicalPlanHomeProps) {
   const { hydrated, state, setState } = useTechnicalPlanWorkflow();
   const { showToast } = useToast();
   const [tenderMarkdown, setTenderMarkdown] = useState('');
@@ -194,6 +196,11 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
   const sortLeaveResolverRef = useRef<((allowed: boolean) => void) | null>(null);
   const outlineWordControlLeaveResolverRef = useRef<((allowed: boolean) => void) | null>(null);
   const shownWordControlWarningTaskIdsRef = useRef(new Set<string>());
+  // 事件过滤（T13）：回调里读 ref 而非闭包 prop，避免订阅 effect 因项目切换频繁重挂。
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
   const steps = technicalPlanSteps;
   const activeIndex = Math.max(0, steps.indexOf(state.step));
   const activeStepNumber = String(activeIndex + 1).padStart(2, '0');
@@ -422,6 +429,9 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
     }
 
     const unsubscribe = window.yibiao.tasks.onTaskEvent<typeof state>((event) => {
+      // 事件过滤（T13）：跨项目事件只更新归属页面，当前工作台只消费本项目的状态与补丁。
+      const eventProjectId = (event.task as { project_id?: string | null } | undefined)?.project_id ?? null;
+      if (eventProjectId && activeProjectIdRef.current && eventProjectId !== activeProjectIdRef.current) return;
       const taskType = (event.task as { type?: string } | undefined)?.type;
       const latestTask = trimTaskLogs(event.task as BackgroundTaskState | undefined);
       const technicalPlan = event.technicalPlanPatch || event.technicalPlan;

@@ -6,6 +6,7 @@ import RequiredOnlineServicesPrompt from './app/RequiredOnlineServicesPrompt';
 import UpdateNotifier from './app/UpdateNotifier';
 import { useTextModelSetupRedirect } from './app/useTextModelSetupRedirect';
 import AppShell from './components/AppShell';
+import ProjectRunningBadge from './features/projects/ProjectRunningBadge';
 import ProjectSwitcher from './features/projects/ProjectSwitcher';
 import { useProjects } from './features/projects/useProjects';
 import { trackAppOpen, trackConfigUsage, trackPageView } from './shared/analytics/analytics';
@@ -100,12 +101,20 @@ function App() {
         activeSection={activeSection}
         developerMode={developerMode}
         projectSwitcher={(
-          <ProjectSwitcher
-            projects={projects}
-            activeProjectId={activeProjectId}
-            switching={switching}
-            onSwitch={(projectId) => { void requestProjectSwitch(projectId); }}
-          />
+          <>
+            <ProjectSwitcher
+              projects={projects}
+              activeProjectId={activeProjectId}
+              switching={switching}
+              onSwitch={(projectId) => { void requestProjectSwitch(projectId); }}
+            />
+            {/* 后台项目运行角标（T13）：其他项目任务运行中时提示，可直达切换。 */}
+            <ProjectRunningBadge
+              projects={projects}
+              activeProjectId={activeProjectId}
+              onSwitch={(projectId) => { void requestProjectSwitch(projectId); }}
+            />
+          </>
         )}
         onSectionChange={(section) => { void requestSectionChange(section); }}
       >

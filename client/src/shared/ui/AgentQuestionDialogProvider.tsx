@@ -159,6 +159,9 @@ export function AgentQuestionDialogProvider({ children }: { children: ReactNode 
             onInteractOutside={(event) => event.preventDefault()}
           >
             <header className="agent-question-head">
+              {question?.project_name && (
+                <p className="agent-question-project">项目：{question.project_name}</p>
+              )}
               <Dialog.Title>需要您确认以下问题</Dialog.Title>
             </header>
 

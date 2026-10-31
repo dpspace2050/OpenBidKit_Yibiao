@@ -267,6 +267,8 @@ export interface AgentQuestion {
   asked_at: string;
   auto_answer_at?: string;
   is_primary?: boolean;
+  /** 多项目支持：发起任务所属项目名（多项目提问弹窗区分归属用）；全域任务为 null。 */
+  project_name?: string | null;
 }
 
 export interface AutoConfirmationState {

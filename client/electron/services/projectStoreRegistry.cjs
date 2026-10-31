@@ -44,9 +44,10 @@ function createProjectStoreRegistry({ app, registry, deps, onProjectOpened, onPr
     db.pragma('foreign_keys = ON');
     ensureProjectSchemaHealth(db);
     const projectApp = createProjectAppProxy(app, projectDir);
-    const { fileService, agentService, taskLogStore, configStore, onTechnicalPlanStoreCreated } = deps;
+    const { fileService, agentService, taskLogStore, configStore, onTechnicalPlanStoreCreated, onProjectNameExtracted } = deps;
     // technicalPlanStore 需感知 projectId：store 内部清理 Agent 持久会话时按项目前缀键路由
-    const technicalPlanStore = createTechnicalPlanStore({ app: projectApp, db, fileService, agentService, taskLogStore, configStore, projectId });
+    // onProjectNameExtracted（T13）：outline 落库提取到项目名 → 回写项目注册表（registry.updateNameFromAi）。
+    const technicalPlanStore = createTechnicalPlanStore({ app: projectApp, db, fileService, agentService, taskLogStore, configStore, projectId, onProjectNameExtracted });
     // T9：Agent 工作空间监听在 store 构造点逐项目接上（原 index.cjs 对单例 store 的接线迁移至此）
     if (typeof onTechnicalPlanStoreCreated === 'function') {
       try { onTechnicalPlanStoreCreated(technicalPlanStore); } catch (error) { console.warn('[project-registry] 接入 Agent 工作空间监听失败', error); }

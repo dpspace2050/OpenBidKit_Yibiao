@@ -73,8 +73,9 @@ function registerProjectsIpc({ app, registry, storeRegistry, taskService, config
     registry.create({ id: projectId, name });
     storeRegistry.setCurrent(projectId);
     try {
-      emitActive(projectId);
-      // setCurrent 已完成：importTenderDocument 内部按当前项目缺省路由（D5③）
+      // setCurrent 已完成：importTenderDocument 内部按当前项目缺省路由（D5③）。
+      // 激活广播（emitActive）与记住上次项目推迟到导入成功：导入期间渲染层停留在项目列表页
+      // 看 spinner，完成后一次性切入新项目工作台（T12 移交项）。
       const importResult = await taskService.importTenderDocument(filePaths);
       if (importResult && importResult.success === false) {
         // 软失败（格式不支持/解析为空/缺 LibreOffice 等）不返回结果，转 throw 走下方统一回滚。
@@ -83,6 +84,7 @@ function registerProjectsIpc({ app, registry, storeRegistry, taskService, config
         throw error;
       }
       persistLastProject(projectId);
+      emitActive(projectId);
       return { projectId, name, importResult };
     } catch (error) {
       // 导入失败即回滚整个项目（新建项目尚无用户数据，安全）

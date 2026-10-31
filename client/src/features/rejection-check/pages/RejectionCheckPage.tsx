@@ -558,7 +558,12 @@ function LogicFindingItem({ finding, bidLabel, expanded, onToggle, onDelete }: {
   );
 }
 
-function RejectionCheckPage() {
+interface RejectionCheckPageProps {
+  /** 多项目支持（T13）：当前激活项目，用于过滤其他项目的任务事件；空态为 null。 */
+  activeProjectId?: string | null;
+}
+
+function RejectionCheckPage({ activeProjectId = null }: RejectionCheckPageProps) {
   const [step, setStep] = useState<RejectionCheckStep>('documents');
   const [tenderDocument, setTenderDocument] = useState<RejectionDocumentContent | null>(null);
   const [tenderDocuments, setTenderDocuments] = useState<RejectionDocumentContent[]>([]);
@@ -589,6 +594,11 @@ function RejectionCheckPage() {
   const customCheckItemsRef = useRef('');
   const customCheckItemsDraftRef = useRef('');
   const customCheckItemsSaveVersionRef = useRef(0);
+  // 事件过滤（T13）：回调里读 ref 而非闭包 prop，避免订阅 effect 因项目切换频繁重挂。
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  useEffect(() => {
+    activeProjectIdRef.current = activeProjectId;
+  }, [activeProjectId]);
   const { showToast } = useToast();
   const { showDocumentParseNotice } = useDocumentParseNotice();
 
@@ -837,6 +847,9 @@ function RejectionCheckPage() {
     }
 
     const unsubscribe = window.yibiao.tasks.onTaskEvent<unknown, RejectionCheckWorkspaceState>((event) => {
+      // 事件过滤（T13）：跨项目事件只更新归属页面，当前废标检查工作台只消费本项目的状态与补丁。
+      const eventProjectId = (event.task as { project_id?: string | null } | undefined)?.project_id ?? null;
+      if (eventProjectId && activeProjectIdRef.current && eventProjectId !== activeProjectIdRef.current) return;
       if (event.rejectionCheck) {
         applyWorkspaceState(event.rejectionCheck, { syncViewState: false });
       }
@@ -847,7 +860,12 @@ function RejectionCheckPage() {
 
     void window.yibiao.tasks.getActiveTasks()
       .then((tasks) => {
+        // 与事件过滤同口径（T13）：getActiveTasks 返回全部项目的运行中任务，陈旧任务核对只看本项目。
         const activeTypes = new Set((Array.isArray(tasks) ? tasks : [])
+          .filter((task) => {
+            const taskProjectId = (task as { project_id?: string | null } | undefined)?.project_id ?? null;
+            return !taskProjectId || !activeProjectIdRef.current || taskProjectId === activeProjectIdRef.current;
+          })
           .map((task) => {
             const type = task && typeof task === 'object' ? (task as { type?: string }).type : '';
             return typeof type === 'string' ? type : '';
