@@ -22,13 +22,17 @@ function tableNames(db) {
   return new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
 }
 
-// 老全局库的三域代表表（4/32，表结构最小化、列名与显式列交集复制兼容——覆盖项目侧 NOT NULL 无默认列）
+// 老全局库的三域代表表（6/32，表结构最小化、列名与显式列交集复制兼容——覆盖项目侧 NOT NULL 无默认列）
 // 与种子数据；抽成函数供重放测试重建现场（崩溃发生在 drop-tables 前 → 全局三域表仍在、数据未动）。
+// duplicate_check_files / duplicate_check_outline_items 携真实外键（与 sqliteDatabase.cjs 生产 DDL 一致）：
+// FK ON 的连接上按 THREE_DOMAIN_TABLES 顺序先 DROP 父表，再 DROP 子表会报
+// "no such table: main.duplicate_check_files"（真实存量库迁移失败根因）。
 function seedLegacyGlobalDb(db) {
   db.exec(`
     CREATE TABLE technical_plan_meta (
       id INTEGER PRIMARY KEY,
       outline_project_name TEXT,
+      tender_files_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -41,11 +45,44 @@ function seedLegacyGlobalDb(db) {
       updated_at TEXT NOT NULL
     );
     CREATE TABLE duplicate_check_meta (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE duplicate_check_files (
+      file_id TEXT PRIMARY KEY,
+      role TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      extension TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0,
+      modified_at TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE duplicate_check_outline_items (
+      item_id TEXT PRIMARY KEY,
+      file_id TEXT NOT NULL,
+      parent_item_id TEXT,
+      level INTEGER NOT NULL,
+      number TEXT,
+      title TEXT NOT NULL,
+      normalized_title TEXT NOT NULL,
+      path_titles_json TEXT NOT NULL,
+      normalized_path TEXT NOT NULL,
+      source TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      from_tender INTEGER NOT NULL DEFAULT 0,
+      matched_tender_sentence TEXT,
+      FOREIGN KEY (file_id) REFERENCES duplicate_check_files(file_id) ON DELETE CASCADE,
+      FOREIGN KEY (parent_item_id) REFERENCES duplicate_check_outline_items(item_id) ON DELETE CASCADE
+    );
     CREATE TABLE rejection_check_meta (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   db.prepare("INSERT INTO technical_plan_meta (id, outline_project_name, created_at, updated_at) VALUES (1, '老项目', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
   db.prepare("INSERT INTO technical_plan_outline_nodes (node_id, title, sort_order, level, created_at, updated_at) VALUES ('node-1', '老节点', 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
   db.prepare("INSERT INTO duplicate_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO duplicate_check_files (file_id, role, file_name, file_path, extension, created_at, updated_at) VALUES ('file-1', 'bid', '查重文件1.docx', 'duplicate-check/查重文件1.docx', '.docx', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
+  db.prepare("INSERT INTO duplicate_check_outline_items (item_id, file_id, level, title, normalized_title, path_titles_json, normalized_path, source) VALUES ('item-1', 'file-1', 1, '第一章', '第一章', '[\"第一章\"]', '第一章', 'outline')").run();
   db.prepare("INSERT INTO rejection_check_meta (id, created_at, updated_at) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')").run();
 }
 
@@ -57,6 +94,9 @@ function makeLegacyEnv(prefix) {
   fs.mkdirSync(workspaceDir, { recursive: true });
   const globalDbPath = path.join(workspaceDir, 'yibiao.sqlite');
   const globalDb = new Database(globalDbPath);
+  // 与生产一致：createSqliteDatabase 打开全局库即 foreign_keys = ON（sqliteDatabase.cjs），
+  // fixture 必须复现该连接状态才能触发 FK ON 下的 DROP 顺序失败。
+  globalDb.pragma('foreign_keys = ON');
   seedLegacyGlobalDb(globalDb);
   putFile(path.join(workspaceDir, 'technical-plan', 'tender.md'), '# 标书');
   putFile(path.join(workspaceDir, 'duplicate-check', 'contents', 'f1.md'), '查重文件');
@@ -95,6 +135,9 @@ test('存量迁移主流程：表复制/目录搬迁/全局DROP/registry激活 +
   assert.equal(meta.updated_at, '2026-01-02T00:00:00.000Z');
   assert.equal(pdb.prepare('SELECT COUNT(*) AS n FROM technical_plan_outline_nodes').get().n, 1);
   assert.equal(pdb.prepare('SELECT COUNT(*) AS n FROM duplicate_check_meta').get().n, 1);
+  // FK 两表数据完整复制（子表 FK 行不丢）
+  assert.equal(pdb.prepare('SELECT COUNT(*) AS n FROM duplicate_check_files').get().n, 1);
+  assert.equal(pdb.prepare('SELECT COUNT(*) AS n FROM duplicate_check_outline_items').get().n, 1);
   assert.equal(pdb.prepare('SELECT COUNT(*) AS n FROM rejection_check_meta').get().n, 1);
   pdb.close();
 
@@ -146,7 +189,7 @@ test('存量迁移主流程：表复制/目录搬迁/全局DROP/registry激活 +
 
 test('断言8 全新安装：三域表全空 → 直接清理（cleanedFresh），不建项目', () => {
   const env = makeLegacyEnv('yibiao-mig-fresh-');
-  env.globalDb.exec('DELETE FROM technical_plan_meta; DELETE FROM technical_plan_outline_nodes; DELETE FROM duplicate_check_meta; DELETE FROM rejection_check_meta;');
+  env.globalDb.exec('DELETE FROM technical_plan_meta; DELETE FROM technical_plan_outline_nodes; DELETE FROM duplicate_check_meta; DELETE FROM duplicate_check_outline_items; DELETE FROM duplicate_check_files; DELETE FROM rejection_check_meta;');
   for (const dir of ['technical-plan', 'duplicate-check', 'rejection-check', 'generated-images', 'imported-images']) {
     fs.rmSync(path.join(env.workspaceDir, dir), { recursive: true, force: true });
   }
@@ -263,6 +306,25 @@ test('fatal 粘性：journal status=failed → 短路返回 fatal:true（error �
   const journal = JSON.parse(fs.readFileSync(journalPath(env.app), 'utf8'));
   assert.equal(journal.status, 'failed');
   assert.equal(journal.error, 'boom');
+
+  env.globalDb.close();
+});
+
+test('项目名三级回退：outline_project_name 为 NULL + tender_files_json 有文件 → 项目名=第一份文件名去扩展名', () => {
+  const env = makeLegacyEnv('yibiao-mig-name-');
+  // 真实存量库实锤：AI 提取名未落库时 outline_project_name 为 NULL，
+  // 第一份招标文件名（technicalPlanStore 的 tender_files_json 结构，字段 fileName）兜底。
+  env.globalDb.prepare('UPDATE technical_plan_meta SET outline_project_name = NULL, tender_files_json = ? WHERE id = 1').run(JSON.stringify([
+    { id: 'tender-01', fileName: '白朗县光储电站EPC总承包招标文件20261008(1)(1).doc', markdownPath: 'technical-plan/tender-files/tender-01.md' },
+    { id: 'tender-02', fileName: '第二份招标文件.pdf', markdownPath: 'technical-plan/tender-files/tender-02.md' },
+  ]));
+
+  const result = runLegacyMigration({ app: env.app, globalDb: env.globalDb, registry: env.registry });
+  assert.equal(result.migrated, true);
+
+  const list = env.registry.list();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].name, '白朗县光储电站EPC总承包招标文件20261008(1)(1)', '应取第一份文件名并去掉 .doc 扩展名');
 
   env.globalDb.close();
 });

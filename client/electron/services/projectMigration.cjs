@@ -24,6 +24,38 @@ function moveDirSafe(from, to) {
   fs.renameSync(from, to);
 }
 
+// SQLite 的 PRAGMA foreign_keys 在事务内是 no-op——必须在事务外设置。
+// 真实存量 schema 的 duplicate_check_outline_items 带
+// FOREIGN KEY (file_id) REFERENCES duplicate_check_files(file_id) ON DELETE CASCADE，
+// 全局库连接 foreign_keys=ON（sqliteDatabase.cjs 显式开启）时按 THREE_DOMAIN_TABLES
+// 顺序先 DROP 父表，再 DROP 子表报 SqliteError: no such table: main.duplicate_check_files。
+// 故先在事务外关 FK，DROP 后恢复原状态（原来开着才需要恢复）。
+function dropThreeDomainTables(db) {
+  const previousForeignKeyState = db.pragma('foreign_keys', { simple: true });
+  db.pragma('foreign_keys = OFF');
+  try {
+    const drop = db.transaction(() => { for (const t of THREE_DOMAIN_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`); });
+    drop();
+  } finally {
+    if (previousForeignKeyState) db.pragma('foreign_keys = ON');
+  }
+}
+
+// 项目名三级回退（与 D3「文件名即名」精神一致）：
+// outline_project_name → 第一份招标文件名去扩展名（meta.tender_files_json 首项的 fileName，
+// 与 technicalPlanStore 的结构一致；解析失败跳过）→ '导入的项目'。
+// 真实存量库 outline_project_name 可能为 NULL（AI 提取名未落库）。
+function resolveLegacyProjectName(meta) {
+  const name = String(meta?.outline_project_name || '').trim();
+  if (name) return name;
+  try {
+    const files = JSON.parse(meta?.tender_files_json || '[]');
+    const fileName = String(Array.isArray(files) ? files[0]?.fileName || '' : '').trim();
+    if (fileName) return path.basename(fileName, path.extname(fileName));
+  } catch (_) { /* tender_files_json 解析失败跳过 */ }
+  return '导入的项目';
+}
+
 // 返回 { migrated: boolean, projectId?: string, error?: string }
 function runLegacyMigration({ app, globalDb, registry, onStatus }) {
   const log = (msg) => { onStatus?.(msg); console.log(`[migration] ${msg}`); };
@@ -43,18 +75,17 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
   let projectId = journal?.projectId;
 
   if (!resume) {
-    const meta = globalDb.prepare('SELECT outline_project_name FROM technical_plan_meta WHERE id = 1').get();
+    const meta = globalDb.prepare('SELECT outline_project_name, tender_files_json FROM technical_plan_meta WHERE id = 1').get();
     const hasData = THREE_DOMAIN_TABLES.some((t) => { try { return globalDb.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n > 0; } catch (_) { return false; } });
     if (!hasData) {
-      // 全新安装：迁移数组建出的空三域表直接 DROP
-      const dropAll = globalDb.transaction(() => { for (const t of THREE_DOMAIN_TABLES) globalDb.exec(`DROP TABLE IF EXISTS ${t}`); });
-      dropAll();
+      // 全新安装：迁移数组建出的空三域表直接 DROP（同样受真实 FK 约束，走 FK 安全 DROP）
+      dropThreeDomainTables(globalDb);
       log('全新安装，直接清理空三域表');
       return { migrated: false, cleanedFresh: true };
     }
     const { generateProjectId } = require('../utils/projectKeys.cjs');
     projectId = generateProjectId();
-    registry.create({ id: projectId, name: meta?.outline_project_name || '导入的项目', nameSource: 'ai' });
+    registry.create({ id: projectId, name: resolveLegacyProjectName(meta), nameSource: 'ai' });
     registry.markMigrating(projectId);
     journal = { status: 'migrating', projectId, doneSteps: [] };
     writeJournal(app, journal);
@@ -127,8 +158,7 @@ function runLegacyMigration({ app, globalDb, registry, onStatus }) {
     }
 
     if (!done('drop-tables')) {
-      const drop = globalDb.transaction(() => { for (const t of THREE_DOMAIN_TABLES) globalDb.exec(`DROP TABLE IF EXISTS ${t}`); });
-      drop();
+      dropThreeDomainTables(globalDb);
       mark('drop-tables');
     }
   } catch (error) {
