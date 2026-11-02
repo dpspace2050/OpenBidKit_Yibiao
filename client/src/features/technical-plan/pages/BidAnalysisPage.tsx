@@ -319,10 +319,6 @@ function BidAnalysisPage({
   }, [bidSectionMode]);
 
   useEffect(() => {
-    setDraftExecutionMode(executionMode);
-  }, [executionMode]);
-
-  useEffect(() => {
     if (bidSectionMode === 'multiple' && bidSectionExtractionStatus === 'success' && bidSections.length >= 2 && !selectedSectionTitle && !sectionTaskRunning) {
       setSectionSelectorOpen(true);
     }
@@ -337,6 +333,9 @@ function BidAnalysisPage({
 
   useEffect(() => {
     if (!settingsOpen) {
+      setDraftSelectedTaskIds(effectiveSelectedTaskIds);
+      setDraftBidSectionMode(bidSectionMode);
+      setDraftExecutionMode(executionMode);
       return;
     }
 
