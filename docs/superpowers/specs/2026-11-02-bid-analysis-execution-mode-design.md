@@ -25,7 +25,7 @@
 
 ### 2.1 新字段
 
-`technical_plan_generation_config` 表新增列 `bid_analysis_execution_mode TEXT DEFAULT 'sequential'`。
+`technical_plan_generation_config` 表新增列 `bid_analysis_execution_mode TEXT NOT NULL DEFAULT 'sequential'`（DDL 对齐仓库既有迁移惯例，如 sqliteDatabase.cjs:1159）。
 
 ### 2.2 触点清单（审计 D 项，白名单式存储，漏一处即静默失效）
 
@@ -34,7 +34,8 @@
 | schema | `client/electron/services/sqliteDatabase.cjs` | 迁移中 `addColumnIfMissing(db, 'technical_plan_generation_config', 'bid_analysis_execution_mode', ...)`（机制参照既有 :1177-1183 用法） |
 | store | `client/electron/services/technicalPlanStore.cjs` | 8 处：`initialState`（:62-97）、`createDefaultGenerationConfig`（:366-381）、`normalizeGenerationConfig`（:383-402）、`ensureGenerationConfigRow` INSERT（:685-721）、`loadGenerationConfig`（:740-769）、`writeGenerationConfig`（:771+）、`saveBidAnalysisConfig`（:2089-2096 解构加字段）、`loadTechnicalPlan` 映射（:1947-1966） |
 | IPC 类型 | `client/src/shared/types/ipc.ts`（:799 saveBidAnalysisConfig 签名）+ preload 类型 | `executionMode?: 'sequential' | 'concurrent'` |
-| 前端接线 | `client/src/hooks/useTechnicalPlanWorkflow.ts`（:14-15 默认值）、`TechnicalPlanHome.tsx`（:485-488 / :1124-1125 / :1137 状态合并） | 默认 `'sequential'` |
+| 前端类型 | `client/src/features/technical-plan/types.ts`（:339 TechnicalPlanState 加 executionMode 字段）+ BidAnalysisPage props | 类型声明同步 |
+| 前端接线 | `client/src/features/technical-plan/hooks/useTechnicalPlanWorkflow.ts`（:14-15 默认值）、`client/src/features/technical-plan/pages/TechnicalPlanHome.tsx`（:485-488 / :1124-1125 / :1137 状态合并与 props 下传） | 默认 `'sequential'` |
 
 ### 2.3 旧配置回退
 
@@ -87,7 +88,7 @@ async function runRound(tasksToRun) {
 
 ### 3.4 前缀预热（warmPromptPrefix，:434-442）
 
-两种模式都保留（逐项模式首项前预热一次、后续所有项共享前缀缓存，收益更大）。**修订**：`warmPromptPrefix` 调用传入 `signal: taskControl.signal`（promptPrefixCache.cjs:25 已支持 `signal?.throwIfAborted()`），取消时预热段不再空转刷噪音日志。
+两种模式都保留（逐项模式首项前预热一次、后续所有项共享前缀缓存，收益更大）。**修订**：`warmPromptPrefix` 调用传入 `signal: taskControl.signal`（`client/electron/utils/promptPrefixCache.cjs`:25 已支持 `signal?.throwIfAborted()`），取消时预热段不再空转刷噪音日志。
 
 ## 4. 前端设计（BidAnalysisPage.tsx）
 
@@ -111,7 +112,7 @@ async function runRound(tasksToRun) {
 |---|---|---|
 | :588 命令栏说明 | "并发解析招标文件，全部选中解析项结束后进入目录生成。" | 按当前配置动态："逐项解析招标文件，选中项依次完成后进入目录生成。" / "并发解析招标文件，全部选中解析项结束后进入目录生成。" |
 | :696 任务列表提示 | "点击开始解析后，左侧任务会并发运行；…" | 按模式动态（"…左侧任务会依次运行…"） |
-| :261-265 缓存优化提示 | 启发式：projectOverview running 且 doneCount===0 → "正在优化提示词缓存" | 逐项模式下跳过该启发式，直接显示当前解析项进度（3.2 的日志已提供） |
+| :261-265 缓存优化提示 | 启发式：projectOverview running 且 doneCount===0 → "正在优化提示词缓存" | 逐项模式下跳过该启发式，progressMessage（:266-272）改取 task.logs 末条（"正在解析 X(i/N)"，参照 GlobalFactsPage.tsx:73 latestLog 模式；BidAnalysisPage 现状不渲染 task.logs，数据通道以此写死） |
 | configLabel chip（:590-593, :276） | 仅解析范围标签 | 追加当前模式标签（"逐项"/"并发"） |
 
 ## 5. 错误处理
