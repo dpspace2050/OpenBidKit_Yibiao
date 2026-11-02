@@ -71,6 +71,7 @@ const initialState = {
   bidAnalysisTasks: {},
   bidAnalysisProgress: 0,
   bidSectionMode: 'single',
+  executionMode: 'sequential',
   bidSections: [],
   bidSectionExtractionStatus: 'idle',
   bidSectionExtractionError: undefined,
@@ -369,6 +370,7 @@ function createDefaultGenerationConfig() {
     bidAnalysisMode: bidAnalysis.mode,
     bidAnalysisSelectedTaskIds: bidAnalysis.selectedTaskIds,
     bidSectionMode: 'single',
+    executionMode: 'sequential',
     outlineMode: 'standalone-technical',
     outlineExpansionMode: 'ai-complement',
     outlineWordControlOptions: { ...defaultOutlineWordControlOptions },
@@ -388,6 +390,7 @@ function normalizeGenerationConfig(config) {
     bidAnalysisMode: bidAnalysis.mode,
     bidAnalysisSelectedTaskIds: bidAnalysis.selectedTaskIds,
     bidSectionMode: normalizeBidSectionMode(source.bidSectionMode),
+    executionMode: source.executionMode === 'concurrent' ? 'concurrent' : 'sequential',
     outlineMode: ['response-file', 'standalone-technical', 'standalone-business'].includes(source.outlineMode)
       ? source.outlineMode
       : defaults.outlineMode,
@@ -684,13 +687,13 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     const content = defaults.contentGenerationOptions;
     db.prepare(`
       INSERT INTO technical_plan_generation_config (
-        id, bid_analysis_mode, bid_section_mode, outline_mode, outline_expansion_mode,
+        id, bid_analysis_mode, bid_section_mode, bid_analysis_execution_mode, outline_mode, outline_expansion_mode,
         minimum_words, maximum_words, section_words, global_facts_mode, export_template_id, export_template_scope,
         use_ai_images, use_mermaid_images,
         use_html_images, html_image_types, table_requirement, image_quantity, html_image_optimization, word_count_repair, layout_check,
         created_at, updated_at
       ) VALUES (
-        1, @bid_analysis_mode, @bid_section_mode, @outline_mode, @outline_expansion_mode,
+        1, @bid_analysis_mode, @bid_section_mode, @bid_analysis_execution_mode, @outline_mode, @outline_expansion_mode,
         @minimum_words, @maximum_words, @section_words, @global_facts_mode, @export_template_id, @export_template_scope,
         @use_ai_images, @use_mermaid_images,
         @use_html_images, @html_image_types, @table_requirement, @image_quantity, @html_image_optimization, @word_count_repair, @layout_check,
@@ -699,6 +702,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     `).run({
       bid_analysis_mode: defaults.bidAnalysisMode,
       bid_section_mode: defaults.bidSectionMode,
+      bid_analysis_execution_mode: defaults.executionMode,
       outline_mode: defaults.outlineMode,
       outline_expansion_mode: defaults.outlineExpansionMode,
       minimum_words: defaults.outlineWordControlOptions.minimumWords,
@@ -743,6 +747,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       bidAnalysisMode: row.bid_analysis_mode,
       bidAnalysisSelectedTaskIds: loadGenerationBidTaskIds(),
       bidSectionMode: row.bid_section_mode,
+      executionMode: row.bid_analysis_execution_mode,
       outlineMode: row.outline_mode,
       outlineExpansionMode: row.outline_expansion_mode,
       outlineWordControlOptions: {
@@ -777,6 +782,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       UPDATE technical_plan_generation_config SET
         bid_analysis_mode = @bid_analysis_mode,
         bid_section_mode = @bid_section_mode,
+        bid_analysis_execution_mode = @bid_analysis_execution_mode,
         outline_mode = @outline_mode,
         outline_expansion_mode = @outline_expansion_mode,
         minimum_words = @minimum_words,
@@ -799,6 +805,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     `).run({
       bid_analysis_mode: normalized.bidAnalysisMode,
       bid_section_mode: normalized.bidSectionMode,
+      bid_analysis_execution_mode: normalized.executionMode,
       outline_mode: normalized.outlineMode,
       outline_expansion_mode: normalized.outlineExpansionMode,
       minimum_words: wordControl.minimumWords,
@@ -1957,6 +1964,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       bidAnalysisTasks,
       bidAnalysisProgress: calculateBidProgress(bidAnalysisMode, bidAnalysisTasks, bidAnalysisSelectedTaskIds),
       bidSectionMode: generationConfig.bidSectionMode,
+      executionMode: generationConfig.executionMode,
       bidSections,
       bidSectionExtractionStatus: bidSectionExtractionTask?.status
         ? normalizeBidSectionExtractionStatus(bidSectionExtractionTask.status)
@@ -2086,12 +2094,13 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     });
   }
 
-  function saveBidAnalysisConfig({ mode, selectedTaskIds, bidSectionMode } = {}) {
+  function saveBidAnalysisConfig({ mode, selectedTaskIds, bidSectionMode, executionMode } = {}) {
     const config = normalizeBidAnalysisConfig(mode, selectedTaskIds);
     saveGenerationConfig({
       bidAnalysisMode: config.mode,
       bidAnalysisSelectedTaskIds: config.selectedTaskIds,
       ...(bidSectionMode === undefined ? {} : { bidSectionMode }),
+      ...(executionMode === undefined ? {} : { executionMode }),
     });
   }
 

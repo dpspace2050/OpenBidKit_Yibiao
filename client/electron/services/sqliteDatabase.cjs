@@ -1545,6 +1545,13 @@ const projectSchemaColumnGroups = [
       layout_check: 'INTEGER NOT NULL DEFAULT 0',
     },
   },
+  {
+    version: 36,
+    table: 'technical_plan_generation_config',
+    columns: {
+      bid_analysis_execution_mode: "TEXT NOT NULL DEFAULT 'sequential'",
+    },
+  },
 ];
 
 // 全局库列健康组：仅全局归属的表。

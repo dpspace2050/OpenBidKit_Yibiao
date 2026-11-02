@@ -2,9 +2,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { setTimeout: delay } = require('node:timers/promises');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 const { ensureProjectSchemaHealth } = require('../electron/services/sqliteDatabase.cjs');
 const { getBidAnalysisTasks, runBidAnalysisTask } = require('../electron/services/bidAnalysisTask.cjs');
+const { createProjectRegistry } = require('../electron/services/projectRegistry.cjs');
+const { createProjectStoreRegistry } = require('../electron/services/projectStoreRegistry.cjs');
 
 function createHarness({ chatImpl } = {}) {
   const logs = [];
@@ -129,4 +134,22 @@ test('P0 守门：项目库健康检查补建 bid_analysis_execution_mode 列 + 
   assert.equal(col.dflt_value, "'sequential'", `默认值应为 'sequential'，实际 ${col.dflt_value}`);
   assert.equal(col.notnull, 1, '应为 NOT NULL');
   db.close();
+});
+
+test('配置 round-trip：saveBidAnalysisConfig 带 executionMode → loadTechnicalPlan 读回（store 白名单守门）', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yibiao-execmode-'));
+  const app = { getPath: (name) => (name === 'userData' ? root : path.join(root, name)) };
+  const registry = createProjectRegistry({ db: new Database(':memory:') });
+  registry.create({ id: '20261102-a1b2c3', name: '执行模式测试' });
+  const reg = createProjectStoreRegistry({
+    app,
+    registry,
+    deps: { fileService: {}, agentService: {}, taskLogStore: {}, configStore: { load: () => ({}), save: () => {} } },
+  });
+  const store = reg.resolveStores('20261102-a1b2c3').technicalPlanStore;
+  assert.equal(store.loadTechnicalPlan().executionMode, 'sequential'); // 新库默认值
+  store.saveBidAnalysisConfig({ mode: 'key', selectedTaskIds: [], executionMode: 'concurrent' });
+  assert.equal(store.loadTechnicalPlan().executionMode, 'concurrent'); // 保存并发 → 读回并发
+  store.saveBidAnalysisConfig({ mode: 'key', selectedTaskIds: [] }); // 不带字段的保存不清空已有值
+  assert.equal(store.loadTechnicalPlan().executionMode, 'concurrent');
 });
