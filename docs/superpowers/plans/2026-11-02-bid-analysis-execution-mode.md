@@ -252,11 +252,47 @@ git commit -m "feat: 招标解析执行模式 execution_mode（逐项默认/并�
 - Modify: `client/electron/services/technicalPlanStore.cjs`（8 处，行号见步骤）
 - Test: `client/test/bidAnalysisExecutionMode.test.cjs`（Task 1 的 P0 守门用例）
 
-- [ ] **Step 1: 跑 P0 守门测试确认仍失败**
+- [ ] **Step 1: 在测试文件追加 store round-trip 用例（TDD 红）**
 
-同 Task 1 Step 2 命令（可用 `--test-name-pattern` 过滤 `'P0 守门'` 加速）。预期 FAIL：列缺失。
+在 `client/test/bidAnalysisExecutionMode.test.cjs` 顶部 require 区补充：
 
-- [ ] **Step 2: sqliteDatabase.cjs 加列组条目**
+```js
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { createProjectRegistry } = require('../electron/services/projectRegistry.cjs');
+const { createProjectStoreRegistry } = require('../electron/services/projectStoreRegistry.cjs');
+```
+
+文件末尾追加用例（构造方式照抄 projectStoreRegistry.test.cjs:10-22 先例 — 空 deps 即可，store 只在用到时才触网）：
+
+```js
+test('配置 round-trip：saveBidAnalysisConfig 带 executionMode → loadTechnicalPlan 读回（store 白名单守门）', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yibiao-execmode-'));
+  const app = { getPath: (name) => (name === 'userData' ? root : path.join(root, name)) };
+  const registry = createProjectRegistry({ db: new Database(':memory:') });
+  registry.create({ id: '20261102-a1b2c3', name: '执行模式测试' });
+  const reg = createProjectStoreRegistry({
+    app,
+    registry,
+    deps: { fileService: {}, agentService: {}, taskLogStore: {}, configStore: { load: () => ({}), save: () => {} } },
+  });
+  const store = reg.resolveStores('20261102-a1b2c3').technicalPlanStore;
+  assert.equal(store.loadTechnicalPlan().executionMode, 'sequential'); // 新库默认值
+  store.saveBidAnalysisConfig({ mode: 'key', selectedTaskIds: [], executionMode: 'concurrent' });
+  assert.equal(store.loadTechnicalPlan().executionMode, 'concurrent'); // 保存并发 → 读回并发
+  store.saveBidAnalysisConfig({ mode: 'key', selectedTaskIds: [] }); // 不带字段的保存不清空已有值
+  assert.equal(store.loadTechnicalPlan().executionMode, 'concurrent');
+});
+```
+
+跑同 Task 1 Step 2 命令。预期：round-trip 用例 **FAIL**（`loadTechnicalPlan().executionMode` 为 undefined — 白名单未加）；P0 守门仍 FAIL。
+
+- [ ] **Step 2: 跑 P0 守门 + round-trip 确认红**
+
+（已并入 Step 1 执行。）
+
+- [ ] **Step 3: sqliteDatabase.cjs 加列组条目**
 
 `:1541-1547` layout_check 条目（`version: 35`）之后、数组闭括号 `];`（:1548）之前插入：
 
@@ -270,7 +306,7 @@ git commit -m "feat: 招标解析执行模式 execution_mode（逐项默认/并�
   },
 ```
 
-- [ ] **Step 3: technicalPlanStore.cjs 8 处白名单**
+- [ ] **Step 4: technicalPlanStore.cjs 8 处白名单**
 
 | # | 锚点 | 改动 |
 |---|---|---|
@@ -283,15 +319,15 @@ git commit -m "feat: 招标解析执行模式 execution_mode（逐项默认/并�
 | 7 | `:2089` `function saveBidAnalysisConfig({ mode, selectedTaskIds, bidSectionMode } = {})` | 改为 `function saveBidAnalysisConfig({ mode, selectedTaskIds, bidSectionMode, executionMode } = {})`；`:2094` 条件展开后加一行 `      ...(executionMode === undefined ? {} : { executionMode }),` |
 | 8 | `:1959` `bidSectionMode: generationConfig.bidSectionMode,`（loadTechnicalPlan） | 后插 `      executionMode: generationConfig.executionMode,` |
 
-- [ ] **Step 4: 跑全部单测确认通过**
+- [ ] **Step 5: 跑全部单测确认通过**
 
-同 Task 1 Step 2 命令。预期 **7/7 PASS**。
+同 Task 1 Step 2 命令（round-trip 用例经 registry 建真实 project.sqlite，验证列组+INSERT+UPDATE+load 映射全链路 — 白名单 8 处任何一处漏改都会在此红）。预期 **8/8 PASS**。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```powershell
-git add client/electron/services/sqliteDatabase.cjs client/electron/services/technicalPlanStore.cjs
-git commit -m "feat: executionMode 持久化 — 项目库列组 version 36 + store 白名单 8 处"
+git add client/electron/services/sqliteDatabase.cjs client/electron/services/technicalPlanStore.cjs client/test/bidAnalysisExecutionMode.test.cjs
+git commit -m "feat: executionMode 持久化 — 项目库列组 version 36 + store 白名单 8 处 + round-trip 守门"
 ```
 
 ---
@@ -502,7 +538,7 @@ $env:ELECTRON_RUN_AS_NODE='1'; & ".\node_modules\electron\dist\electron.exe" --t
 node --test test\projectKeys.test.cjs
 ```
 
-预期：旧 17 用例 + 新 7 用例全绿（bidAnalysisExecutionMode 必须用 electron-as-node 跑，projectKeys 用纯 node）。
+预期：旧 17 用例 + 新 8 用例全绿（bidAnalysisExecutionMode 必须用 electron-as-node 跑，projectKeys 用纯 node）。
 
 - [ ] **Step 2: 真机逐项验证**
 
