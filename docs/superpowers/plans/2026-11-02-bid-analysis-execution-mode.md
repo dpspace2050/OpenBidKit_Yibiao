@@ -389,7 +389,7 @@ git commit -m "feat: executionMode 类型定义 + IPC 签名 + 埋点字段 + �
 
 - [ ] **Step 1: props 与类型**
 
-`:14` `bidSectionMode: BidAnalysisMode;` 所在 props 接口 — `bidSectionMode: BidSectionMode;`（:14）后插 `  executionMode: BidAnalysisExecutionMode;`；页面顶部 type import（来自 `'../types'`）加入 `BidAnalysisExecutionMode`。
+props 接口（:9-26）内 `bidSectionMode: BidSectionMode;`（:14）后插 `  executionMode: BidAnalysisExecutionMode;`；页面顶部 type import（来自 `'../types'`）加入 `BidAnalysisExecutionMode`。
 
 - [ ] **Step 2: draft 状态（draftBidSectionMode 同款三处接线）**
 
