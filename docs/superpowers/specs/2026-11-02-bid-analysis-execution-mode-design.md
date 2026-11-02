@@ -1,7 +1,7 @@
 # 招标文件解析执行模式（逐项/并发）设计文档
 
 - 日期：2026-11-02
-- 状态：待评审
+- 状态：已实施（2026-11-02 真机验证通过，4/4 场景 PASS：UI 双向切换/逐项+中断续跑/并发/埋点，见 plans/2026-11-02-bid-analysis-execution-mode-verification.md）
 - 分支：基于 `feature/multi-project-support`
 - 审计：双独立子代理设计审计（代码事实核对 + 边界对抗）+ 三轮 spec 审查（评审通过 → 双审查员复审抓出 DDL 注册机制 P0 → 修订）
 
