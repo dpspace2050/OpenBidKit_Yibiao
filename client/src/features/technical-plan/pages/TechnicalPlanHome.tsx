@@ -1124,6 +1124,7 @@ function TechnicalPlanHome({ registerLeaveGuard, activeProjectId = null }: Techn
           mode={state.bidAnalysisMode}
           selectedTaskIds={state.bidAnalysisSelectedTaskIds}
           bidSectionMode={state.bidSectionMode}
+          executionMode={state.executionMode}
           bidSections={state.bidSections}
           bidSectionExtractionTask={state.bidSectionExtractionTask}
           bidSectionExtractionStatus={state.bidSectionExtractionStatus}

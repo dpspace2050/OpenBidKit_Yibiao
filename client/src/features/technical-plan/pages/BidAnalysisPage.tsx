@@ -4,7 +4,7 @@ import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { bidAnalysisTasks, getBidAnalysisTasks, isMissingBidAnalysisResult } from '../services/bidAnalysisWorkflow';
 import { MarkdownFullscreenViewer, MarkdownRenderer, ProgressBar, useToast } from '../../../shared/ui';
 import BidSectionSelectorDialog from '../components/BidSectionSelectorDialog';
-import type { BackgroundTaskState, BidAnalysisMode, BidAnalysisTasks, BidAnalysisTaskState, BidSectionExtractionStatus, BidSectionMode, DetectedBidSection, TechnicalPlanState } from '../types';
+import type { BackgroundTaskState, BidAnalysisExecutionMode, BidAnalysisMode, BidAnalysisTasks, BidAnalysisTaskState, BidSectionExtractionStatus, BidSectionMode, DetectedBidSection, TechnicalPlanState } from '../types';
 
 interface BidAnalysisPageProps {
   stepNumber: string;
@@ -12,6 +12,7 @@ interface BidAnalysisPageProps {
   mode: BidAnalysisMode;
   selectedTaskIds: string[];
   bidSectionMode: BidSectionMode;
+  executionMode: BidAnalysisExecutionMode;
   bidSections: DetectedBidSection[];
   bidSectionExtractionTask?: BackgroundTaskState;
   bidSectionExtractionStatus: BidSectionExtractionStatus;
@@ -204,6 +205,7 @@ function BidAnalysisPage({
   mode,
   selectedTaskIds,
   bidSectionMode,
+  executionMode,
   bidSections,
   bidSectionExtractionTask,
   bidSectionExtractionStatus,
@@ -223,6 +225,7 @@ function BidAnalysisPage({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [draftSelectedTaskIds, setDraftSelectedTaskIds] = useState<string[]>(() => getSelectedTaskIdsForMode(mode, selectedTaskIds));
   const [draftBidSectionMode, setDraftBidSectionMode] = useState<BidSectionMode>(bidSectionMode);
+  const [draftExecutionMode, setDraftExecutionMode] = useState<BidAnalysisExecutionMode>(executionMode);
   const [sectionSelectorOpen, setSectionSelectorOpen] = useState(false);
   const [selectingSection, setSelectingSection] = useState(false);
   const [pendingAnalysisAfterSection, setPendingAnalysisAfterSection] = useState<{ taskIds?: string[]; nextTaskIds: string[] } | null>(null);
@@ -262,18 +265,22 @@ function BidAnalysisPage({
     && selectedTasks.length > 1
     && selectedTasks.some((task) => task.id === 'projectOverview')
     && tasks.projectOverview?.status === 'running'
-    && doneCount === 0;
+    && doneCount === 0
+    && executionMode === 'concurrent';
+  const latestLog = task?.logs?.[task.logs.length - 1] || '';
   const progressMessage = isPromptCacheOptimizing
     ? '正在优化提示词缓存'
-    : requiredDone && taskRunning
-      ? '关键项已解析完成，等待当前解析任务结束后进入下一步。'
-      : firstMissingSelectedTask
-        ? `${firstMissingSelectedTask.label}未提取到有效内容，请重新解析该项。`
-      : requiredDone ? '招标文件解析任务已结束，可以进入下一步。' : '等待关键解析项完成';
+    : taskRunning && executionMode === 'sequential' && latestLog
+      ? latestLog
+      : requiredDone && taskRunning
+        ? '关键项已解析完成，等待当前解析任务结束后进入下一步。'
+        : firstMissingSelectedTask
+          ? `${firstMissingSelectedTask.label}未提取到有效内容，请重新解析该项。`
+        : requiredDone ? '招标文件解析任务已结束，可以进入下一步。' : '等待关键解析项完成';
   const bidSectionConfigLabel = bidSectionMode === 'multiple'
     ? selectedSectionTitle ? `多标段 · ${selectedSectionTitle}` : '多标段 · 待选择'
     : '单标段';
-  const configLabel = `${bidSectionConfigLabel} · ${getModeLabel(mode)}`;
+  const configLabel = `${bidSectionConfigLabel} · ${getModeLabel(mode)} · ${executionMode === 'sequential' ? '逐项' : '并发'}`;
 
   const syncProgressForSelection = (nextTaskIds: string[]) => {
     const selectedIdSet = new Set(normalizeSelectedTaskIds(nextTaskIds));
@@ -312,6 +319,10 @@ function BidAnalysisPage({
   }, [bidSectionMode]);
 
   useEffect(() => {
+    setDraftExecutionMode(executionMode);
+  }, [executionMode]);
+
+  useEffect(() => {
     if (bidSectionMode === 'multiple' && bidSectionExtractionStatus === 'success' && bidSections.length >= 2 && !selectedSectionTitle && !sectionTaskRunning) {
       setSectionSelectorOpen(true);
     }
@@ -331,7 +342,8 @@ function BidAnalysisPage({
 
     setDraftSelectedTaskIds(effectiveSelectedTaskIds);
     setDraftBidSectionMode(bidSectionMode);
-  }, [bidSectionMode, effectiveSelectedTaskIds, settingsOpen]);
+    setDraftExecutionMode(executionMode);
+  }, [bidSectionMode, effectiveSelectedTaskIds, executionMode, settingsOpen]);
 
   const openSettingsDialog = () => {
     if (taskRunning) {
@@ -340,13 +352,14 @@ function BidAnalysisPage({
     }
     setDraftSelectedTaskIds(effectiveSelectedTaskIds);
     setDraftBidSectionMode(bidSectionMode);
+    setDraftExecutionMode(executionMode);
     setSettingsOpen(true);
   };
 
-  const saveConfig = async (nextTaskIds = draftSelectedTaskIds, closeDialog = true, nextBidSectionMode = draftBidSectionMode) => {
+  const saveConfig = async (nextTaskIds = draftSelectedTaskIds, closeDialog = true, nextBidSectionMode = draftBidSectionMode, nextExecutionMode = draftExecutionMode) => {
     const normalizedTaskIds = normalizeSelectedTaskIds(nextTaskIds);
     const nextMode = getModeForSelection(normalizedTaskIds);
-    await window.yibiao?.technicalPlan.saveBidAnalysisConfig({ mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode });
+    await window.yibiao?.technicalPlan.saveBidAnalysisConfig({ mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode, executionMode: nextExecutionMode });
     const saved = await window.yibiao?.technicalPlan.loadState();
     if (saved) onConfigSaved(saved);
     syncProgressForSelection(normalizedTaskIds);
@@ -354,7 +367,7 @@ function BidAnalysisPage({
       setSettingsOpen(false);
       showToast('招标文件解析配置已保存', 'success');
     }
-    return { mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode };
+    return { mode: nextMode, selectedTaskIds: normalizedTaskIds, bidSectionMode: nextBidSectionMode, executionMode: nextExecutionMode };
   };
 
   const startBidAnalysisOnly = async (taskIds: string[] | undefined, nextTaskIds: string[], nextBidSectionMode: BidSectionMode) => {
@@ -382,8 +395,9 @@ function BidAnalysisPage({
         selected_task_ids: configState.selectedTaskIds,
         task_ids: taskIds,
         force_rerun: forceRerun,
+        execution_mode: configState.executionMode,
       });
-      trackConfigUsage({ bid_analysis_mode: configState.mode }, config);
+      trackConfigUsage({ bid_analysis_mode: configState.mode, bid_analysis_execution_mode: configState.executionMode }, config);
       setSettingsOpen(false);
       showToast(retryTask ? `${retryTask.label}重新解析任务已在后台启动` : '招标文件解析任务已在后台启动', 'success');
     } catch (error) {
@@ -585,7 +599,7 @@ function BidAnalysisPage({
         <div>
           <span className="section-kicker">STEP {stepNumber}</span>
           <strong>招标文件解析</strong>
-          <p>并发解析招标文件，全部选中解析项结束后进入目录生成。</p>
+          <p>{executionMode === 'sequential' ? '逐项解析招标文件，选中解析项依次完成后进入目录生成。' : '并发解析招标文件，全部选中解析项结束后进入目录生成。'}</p>
         </div>
         <div className="bid-analysis-config-chip" title="当前解析配置">
           <span>{configLabel}</span>
@@ -693,7 +707,11 @@ function BidAnalysisPage({
           ) : (
             <div className="markdown-empty-state bid-analysis-empty">
               <strong>{activeTaskStatus === 'error' ? activeTaskState?.error || '解析失败' : '等待解析结果'}</strong>
-              <p>{activeTaskStatus === 'idle' ? '点击开始解析后，左侧任务会并发运行；选择任一任务查看实时输出。' : '正在等待模型返回内容。'}</p>
+              <p>{activeTaskStatus === 'idle'
+                ? (executionMode === 'sequential'
+                  ? '点击开始解析后，左侧任务会依次逐个运行（长文档分段提取仍并行）；选择任一任务查看实时输出。'
+                  : '点击开始解析后，左侧任务会并发运行；选择任一任务查看实时输出。')
+                : '正在等待模型返回内容。'}</p>
             </div>
           )}
         </article>
@@ -783,6 +801,33 @@ function BidAnalysisPage({
                       <small>{option.badge}</small>
                     </button>
                   ))}
+                </div>
+              </section>
+
+              <section className="bid-analysis-config-section is-compact">
+                <div className="bid-analysis-config-section-head">
+                  <strong>解析方式</strong>
+                  <span>{draftExecutionMode === 'sequential' ? '依次进行' : '同时进行'}</span>
+                </div>
+                <div className="bid-analysis-config-presets" role="group" aria-label="解析方式">
+                  <button
+                    type="button"
+                    className={`bid-analysis-config-preset${draftExecutionMode === 'sequential' ? ' is-active' : ''}`}
+                    onClick={() => setDraftExecutionMode('sequential')}
+                    disabled={taskRunning}
+                  >
+                    <span>逐项</span>
+                    <small>默认</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={`bid-analysis-config-preset${draftExecutionMode === 'concurrent' ? ' is-active' : ''}`}
+                    onClick={() => setDraftExecutionMode('concurrent')}
+                    disabled={taskRunning}
+                  >
+                    <span>并发</span>
+                    <small>更快</small>
+                  </button>
                 </div>
               </section>
 
