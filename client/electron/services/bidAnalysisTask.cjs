@@ -270,7 +270,7 @@ function runInvalidBidAndRejectionItemsExtraction({ aiService, fileContent, sect
   return runBidAnalysisPromptTask({ aiService, fileContent, task, sectionHint });
 }
 
-async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, checkpointTask, payload }) {
+async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, checkpointTask, taskControl, payload }) {
   const config = normalizeBidAnalysisConfig(payload.mode, payload.selected_task_ids || payload.selectedTaskIds);
   const mode = config.mode;
   const selectedTaskIdSet = new Set(config.taskIds);
@@ -302,6 +302,7 @@ async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, check
   const currentConfig = typeof aiService.getConfig === 'function' ? aiService.getConfig() : {};
   const fileSegments = splitUserTextByContextLimit(fileContent, currentConfig);
   const forceRerun = payload.force_rerun === true || payload.forceRerun === true;
+  const executionMode = payload.execution_mode === 'concurrent' ? 'concurrent' : 'sequential';
   const requestedTaskIds = Array.isArray(payload.task_ids)
     ? new Set(payload.task_ids.filter((taskId) => typeof taskId === 'string'))
     : null;
@@ -434,13 +435,25 @@ async function runBidAnalysisTask({ aiService, workspaceStore, updateTask, check
   if (tasksToRun.length > 1) {
     await Promise.all(fileSegments.map((segment, index) => warmPromptPrefix({
       aiService,
+      signal: taskControl?.signal,
       messages: buildTenderContextMessages(segment, sectionHint),
       logTitle: fileSegments.length > 1 ? `招标解析-公共前缀预热-第${index + 1}段` : '招标解析-公共前缀预热',
       label: '招标文件',
       onActivity: ({ message }) => updateTask({ status: 'running', progress: doneProgress(currentTasks), logs: [message] }),
     })));
   }
-  await Promise.all(tasksToRun.map(runOneSafely));
+  // 逐项模式：一项结束后再启动下一项；取消（项目删除/重置/招标文件更新）在项间生效。
+  if (executionMode === 'concurrent') {
+    await Promise.all(tasksToRun.map(runOneSafely));
+  } else {
+    let index = 0;
+    for (const task of tasksToRun) {
+      if (taskControl?.signal?.aborted) break;
+      index += 1;
+      updateTask({ status: 'running', logs: [`正在解析 ${task.label}（${index}/${tasksToRun.length}）`] });
+      await runOneSafely(task);
+    }
+  }
 
   const missingRequiredTasks = getMissingRequiredTasks(currentTasks);
   if (missingRequiredTasks.length) {
