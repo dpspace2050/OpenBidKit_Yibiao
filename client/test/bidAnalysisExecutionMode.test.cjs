@@ -32,7 +32,10 @@ function createHarness({ chatImpl } = {}) {
   };
   const updateTask = (partial) => { if (partial?.logs?.length) logs.push(...partial.logs); };
   const checkpoints = [];
-  const checkpointTask = (partial) => { checkpoints.push(partial); };
+  const checkpointTask = (partial) => {
+    if (controller.signal.aborted) throw controller.signal.reason || new Error('后台任务已取消');
+    checkpoints.push(partial);
+  };
   const taskControl = { signal: controller.signal, isPauseRequested: () => false };
   return { aiService, workspaceStore, updateTask, checkpointTask, taskControl, controller, logs, checkpoints, chatCalls, get maxActive() { return maxActive; } };
 }
@@ -96,7 +99,7 @@ test('逐项模式单项失败不阻塞：后续项照常执行，必填缺失�
   assert.ok(String(last.error || '').includes('必填解析项未完成'), last.error);
 });
 
-test('逐项模式取消：第 1 项结束后 break，不再调用后续项', async () => {
+test('逐项模式取消：第 1 项结束后不再启动后续项，取消不伪装成单项失败', async () => {
   const harness = createHarness({
     chatImpl: async () => {
       await delay(10);
@@ -104,8 +107,9 @@ test('逐项模式取消：第 1 项结束后 break，不再调用后续项', as
       return '模拟解析结果';
     },
   });
-  await runPayload(harness, {});
+  await assert.rejects(() => runPayload(harness, {}));
   assert.equal(realChatCount(harness), 1, `取消后应只跑 1 项，实际 ${realChatCount(harness)}`);
+  assert.ok(!harness.checkpoints.some((c) => String(c.error || '').includes('解析失败')), '取消不得落"解析失败"checkpoint');
   const progressLogs = harness.logs.filter((line) => line.startsWith('正在解析'));
   assert.equal(progressLogs.length, 1);
 });

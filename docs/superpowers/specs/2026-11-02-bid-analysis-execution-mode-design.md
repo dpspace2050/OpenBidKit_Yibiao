@@ -193,3 +193,4 @@ node:test 风格 + 依赖注入 mock（aiService / workspaceStore / updateTask /
 | 老用户默认行为变更 | 默认从并发变逐项，长文档整体耗时变长 | UI 明示"默认"+ 差异说明；用户可随时切回 |
 | 必填校验按全量 scope | 单项重跑后若历史存在 idle 必填项会全局报 error（既有行为，暂停缺失使其罕见路径不变） | 不修，记录已知现状 |
 | 多项目并行 | 两项目各跑一个 sequential 解析任务：槽位 `${projectId}:bid-analysis` 独立、queueScope 含 projectId，互不干扰；逐项反而降低全局队列压力 | 已审计证实，无需改动 |
+| 逐项模式单项失败日志被下一条进度日志顶掉 | applyTaskPatch logs 为整体替换语义；单项错误已持久化于 bidAnalysisTasks[item].error 并由任务卡展示，信息损失是窗口期的 | 接受现状，记录 |
