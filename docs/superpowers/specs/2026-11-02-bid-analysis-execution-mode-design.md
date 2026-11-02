@@ -3,7 +3,7 @@
 - 日期：2026-11-02
 - 状态：待评审
 - 分支：基于 `feature/multi-project-support`
-- 审计：双独立子代理审计（代码事实核对 + 边界对抗），P0/P1 结论已吸收
+- 审计：双独立子代理设计审计（代码事实核对 + 边界对抗）+ 三轮 spec 审查（评审通过 → 双审查员复审抓出 DDL 注册机制 P0 → 修订）
 
 ## 1. 需求
 
@@ -25,23 +25,44 @@
 
 ### 2.1 新字段
 
-`technical_plan_generation_config` 表新增列 `bid_analysis_execution_mode TEXT NOT NULL DEFAULT 'sequential'`（DDL 对齐仓库既有迁移惯例，如 sqliteDatabase.cjs:1159）。
+`technical_plan_generation_config` 表新增列 `bid_analysis_execution_mode TEXT NOT NULL DEFAULT 'sequential'`。
 
-### 2.2 触点清单（审计 D 项，白名单式存储，漏一处即静默失效）
+**⚠️ 注册机制（P0 修订，双审查员实锤）**：该表自多项目改造（v37 拆库）后归属**项目库**（project.sqlite）。项目库开库只走 `ensureProjectSchemaHealth`（projectStoreRegistry.cjs:41-45 → sqliteDatabase.cjs:1651-1666），只补 `projectSchemaColumnGroups`（:1369 起）里注册的列；`migrations[]`/`applyMigrations` **只跑全局库**，且 v37 已把三域表从全局库剔除（:8-10 注释 + :1847-1853 空迁移栅栏）。因此列注册**必须**在 `projectSchemaColumnGroups` 追加条目：
+
+```js
+{ table: 'technical_plan_generation_config', columns: { bid_analysis_execution_mode: "TEXT NOT NULL DEFAULT 'sequential'" } }
+```
+
+（写法参照 :1541-1547 `layout_check` 条目。）
+
+**不做**全局库 v38 防御迁移：全局库三域表已是死数据（v37 存量复制后 DROP），加迁移需三处齐改（migrations 条目 + `schemaVersion` 37→38 bump，否则 applyMigrations :1907 提前返回静默失效），且版本号 bump 会再次触发版本栅栏把 v37 客户端挡在门外 — 无收益有风险，最小改动只注册项目库列组。`createTechnicalPlanGenerationConfigSchema`（:163-201）建表清单**不同步**（该清单早已落后，仓库惯例是列组健康检查为唯一补列通道，新库建表后健康组自动补列）。
+
+### 2.2 命名分界（静默失效高危交界，钉死）
+
+| 层 | 拼写 |
+|---|---|
+| DB 列 | `bid_analysis_execution_mode`（snake） |
+| startBidAnalysis payload | `execution_mode`（snake，与现有 task_ids/force_rerun 一致） |
+| store / 状态 / IPC / 前端 | `executionMode`（camel，全链统一） |
+
+`updateGenerationConfig`（technicalPlanStore.cjs:826-833）按 `Object.keys(current)` 逐键 `hasOwn(partial, key)` 合并 — 键名不一致即静默丢弃，三处（normalizeGenerationConfig 输出 / loadTechnicalPlan 映射 / saveBidAnalysisConfig 解构）必须同用 `executionMode`。
+
+### 2.3 触点清单（白名单式存储，漏一处即静默失效）
 
 | 层 | 文件 | 改动 |
 |---|---|---|
-| schema | `client/electron/services/sqliteDatabase.cjs` | 迁移中 `addColumnIfMissing(db, 'technical_plan_generation_config', 'bid_analysis_execution_mode', ...)`（机制参照既有 :1177-1183 用法） |
-| store | `client/electron/services/technicalPlanStore.cjs` | 8 处：`initialState`（:62-97）、`createDefaultGenerationConfig`（:366-381）、`normalizeGenerationConfig`（:383-402）、`ensureGenerationConfigRow` INSERT（:685-721）、`loadGenerationConfig`（:740-769）、`writeGenerationConfig`（:771+）、`saveBidAnalysisConfig`（:2089-2096 解构加字段）、`loadTechnicalPlan` 映射（:1947-1966） |
-| IPC 类型 | `client/src/shared/types/ipc.ts`（:799 saveBidAnalysisConfig 签名）+ preload 类型 | `executionMode?: 'sequential' | 'concurrent'` |
-| 前端类型 | `client/src/features/technical-plan/types.ts`（:339 TechnicalPlanState 加 executionMode 字段）+ BidAnalysisPage props | 类型声明同步 |
-| 前端接线 | `client/src/features/technical-plan/hooks/useTechnicalPlanWorkflow.ts`（:14-15 默认值）、`client/src/features/technical-plan/pages/TechnicalPlanHome.tsx`（:485-488 / :1124-1125 / :1137 状态合并与 props 下传） | 默认 `'sequential'` |
+| schema | `client/electron/services/sqliteDatabase.cjs` | `projectSchemaColumnGroups` 追加条目（见 2.1） |
+| store | `client/electron/services/technicalPlanStore.cjs` | 8 处：`initialState`（:62-97）、`createDefaultGenerationConfig`（:366-381）、`normalizeGenerationConfig`（:383-402）、`ensureGenerationConfigRow` INSERT（:685-721）、`loadGenerationConfig`（:740-769）、`writeGenerationConfig`（:771+）、`saveBidAnalysisConfig`（:2089-2096 解构加 `executionMode`）、`loadTechnicalPlan` 映射（:1947-1966），键名统一 `executionMode`（见 2.2） |
+| IPC 类型 | `client/src/shared/types/ipc.ts`（:799 saveBidAnalysisConfig 签名加 `executionMode?`；:60-72 `TechnicalPlanGenerationConfig` 接口同步加字段） | 类型完备（preload.cjs 纯 JS 无类型文件，payload 原样透传零改动，**不是触点**） |
+| 前端类型 | `client/src/features/technical-plan/types.ts`（:339 TechnicalPlanState 加 `executionMode`）+ BidAnalysisPage props | 类型声明同步 |
+| 前端接线 | `client/src/features/technical-plan/hooks/useTechnicalPlanWorkflow.ts`（:14-15 useState 初始值）、`client/src/features/technical-plan/pages/TechnicalPlanHome.tsx`（:485-488 / :1124-1125 / :1137 状态合并与 props 下传） | 默认 `'sequential'`（已核实 :55 cachedState 展开覆盖默认值，落点正确） |
+| 埋点 | `BidAnalysisPage.tsx:386` `trackConfigUsage` + `client/src/.../analytics.ts:48` | `bid_analysis_execution_mode` 随现有 `bid_analysis_mode` 模式加埋点 |
 
-### 2.3 旧配置回退
+### 2.4 旧配置回退
 
-老项目配置无此字段 → `loadState` 返回 undefined → **前端显式回退 `'sequential'`**（与后端 normalize 缺省一致）。新增列带 DEFAULT，旧行 SELECT 直接得默认值，无残留问题。
+老项目配置无此字段 → `loadState` 返回 undefined → **前端显式回退 `'sequential'`**（与后端 normalize 缺省一致）。`ADD COLUMN ... NOT NULL DEFAULT` 对已存在行 SELECT 直接返回默认值（SQLite 语义）；多项目 legacy 复制为列交集（projectMigration.cjs:126-134），新列自动排除、默认值兜底 — 均无残留问题。
 
-### 2.4 老用户行为变更明示
+### 2.5 老用户行为变更明示
 
 默认从"全部并发"变为"逐项"。UI 上"逐项"选项标"默认"chip，配置卡内一句话说明两种方式差异。
 
@@ -80,7 +101,9 @@ async function runRound(tasksToRun) {
 - **取消语义**：break 后落入既有收尾逻辑——若 signal 仍 aborted，后续 `checkpointTask` 先抛（taskService.cjs:801-803），runner catch 判 aborted 静默，现有 interrupted 恢复语义接管。**不引入新终态**。
 - **断点续跑**：取消/失败后再点"开始解析"，:366 现有过滤（`status !== 'success'`）只跑未完成项。已审计证实。
 - **必填项校验**（:445 `getMissingRequiredTasks`）逻辑**不动**。其"按全量 required 而非本轮 scope"是既有现状，非本设计引入，不在本次修改范围（记录为已知现状）。
-- 日志口径：分母 = 本轮 `tasksToRun.length`（续跑时正确），序号 = 本轮序号。`normalizeLogs` 只去重连续相同消息，20 条唯一进度日志无冲突（已审计）。
+- **放置位置**（钉死）：`runRound` 不提取为模块级函数 — 它闭包引用 `executionMode`/`taskControl`/`updateTask`/`runOneSafely`，在 `runBidAnalysisTask` 体内、`runOneSafely` 定义（:423-431）之后、原 :443 处声明。
+- **无进度抖动**（已核实）：`updateTask` 只带 logs 不带 progress，进度仅由 runOne/handleTaskError 的 checkpoint 推进；applyTaskPatch（:785）logs 为整体替换，"取末条"语义成立。
+- 日志口径：分母 = 本轮 `tasksToRun.length`（续跑时正确），序号 = 本轮序号；单项重跑出现"正在解析 X（1/1）"属预期。`normalizeLogs` 只去重连续相同消息，日志上限 80 条（taskLogStore.cjs / 前端 MAX_UI_TASK_LOGS 同为 80），全量任务约 17 项无冲突。
 
 ### 3.3 taskControl 解构
 
@@ -99,7 +122,7 @@ async function runRound(tasksToRun) {
 - **逐项**（标"默认"）— 说明：解析项依次逐个进行，更稳更省；长文档分段提取仍并行
 - **并发** — 说明：所有选中项同时解析，速度更快
 
-配套：draft state（`draftExecutionMode`）+ `openSettingsDialog` 初始化 + 保存链路，模式与现有 draftSelectedTaskIds/draftBidSectionMode 一致。
+配套 draft 接线（P2 修订，钉死模式）：现有两种 draft **不同构** — `draftSelectedTaskIds` 只在弹窗打开时初始化（:327-334），`draftBidSectionMode` 另有 prop 同步 effect（:310-312）。`draftExecutionMode` **必须采用 `draftBidSectionMode` 模式**（useState + prop 同步 effect + `openSettingsDialog` 初始化）：因为 `retryActiveTask`（:448-455）与标段选择后续启（:493-499）都经 `saveConfig` 默认值取 draft 落库，若采用 SelectedTaskIds 模式，项目切换不重挂载时 A 项目的模式会写进 B 项目配置（跨项目脏值）。
 
 ### 4.2 持久化与下发
 
@@ -129,7 +152,14 @@ async function runRound(tasksToRun) {
 
 ### 6.1 单元测试（新增 `client/test/bidAnalysisExecutionMode.test.cjs`）
 
-node:test 风格 + 全依赖注入 mock（aiService / workspaceStore / updateTask / checkpointTask / taskControl），与现有 4 个单测文件同跑法。注意：现有 4 文件均为多项目基建测试，本文件是首个任务执行类单测。
+node:test 风格 + 依赖注入 mock（aiService / workspaceStore / updateTask / checkpointTask / taskControl），与现有 4 个单测文件同体系。注意：现有 4 文件均为多项目基建测试，本文件是首个任务执行类单测。
+
+**fixture 坑位（钉死，均为实测约束）**：
+
+- `taskControl.signal` 必须用**真** `new AbortController().signal` — warmPromptPrefix 传 signal 后会进 `delay(1500, undefined, { signal })`（promptPrefixCache.cjs:23，node:timers/promises 不认 plain object）
+- 多解析项（tasksToRun > 1）用例每个真实 sleep 1.5s（PREFIX_WARMUP_SETTLE_MS 不可注入，node:test 无 fake timer）— 多项时序用例控制数量，纯 sequential/concurrent 行为断言尽量用"单分段 + 多项"组合
+- 绕过前置校验：`readTenderMarkdown → 'x'`（短文本单分段，避开 mergeSegmentedAiResults）、`loadTechnicalPlan → {}`（绕多标段校验 :283-294）、`getConfig → {}`
+- 双跑法：纯逻辑用例 `node --test client/test/bidAnalysisExecutionMode.test.cjs`；含 better-sqlite3 的 round-trip 用例须 `ELECTRON_RUN_AS_NODE=1` + electron 二进制 `--test`（先例：2026-10-30 multi-project verification :126-128）；client/package.json 无 test script，跑法写进计划命令
 
 必测面：
 
@@ -139,8 +169,8 @@ node:test 风格 + 全依赖注入 mock（aiService / workspaceStore / updateTas
 4. sequential：signal.aborted → break，不再调用后续项
 5. 三路径：空集 / 单项 / requestedTaskIds 单项重跑
 6. concurrent 分支：行为与现状一致（Promise.all 全发）
-7. 预热：两模式都调用 warmPromptPrefix，signal 已传入
-8. 配置 round-trip：saveBidAnalysisConfig 带 executionMode → loadState 读回
+7. 预热：两模式都调用 warmPromptPrefix，signal 已传入（chat 调用参数断言）
+8. 配置 round-trip（真 sqlite，electron-as-node 跑法）：**列组注册正确性守门** — 建项目库 → saveBidAnalysisConfig 带 executionMode → loadState 读回；若列未在 projectSchemaColumnGroups 注册，此用例直接抛 no such column（正是 P0 防线）
 
 ### 6.2 真机验证（dev 模式）
 
