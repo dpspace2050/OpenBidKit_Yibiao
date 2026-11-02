@@ -57,10 +57,13 @@ export interface ContentGenerationOptions {
   tableRequirement: ContentTableRequirement;
 }
 
+export type BidAnalysisExecutionMode = 'sequential' | 'concurrent';
+
 export interface TechnicalPlanGenerationConfig {
   bidAnalysisMode: BidAnalysisMode;
   bidAnalysisSelectedTaskIds: string[];
   bidSectionMode: BidSectionMode;
+  executionMode: BidAnalysisExecutionMode;
   outlineMode: OutlineMode;
   outlineExpansionMode: OutlineExpansionMode;
   outlineWordControlOptions: OutlineWordControlOptions;
@@ -348,6 +351,7 @@ export interface TechnicalPlanState {
   bidAnalysisTasks: BidAnalysisTasks;
   bidAnalysisProgress: number;
   bidSectionMode: BidSectionMode;
+  executionMode: BidAnalysisExecutionMode;
   bidSections: DetectedBidSection[];
   bidSectionExtractionStatus: BidSectionExtractionStatus;
   bidSectionExtractionError?: string;

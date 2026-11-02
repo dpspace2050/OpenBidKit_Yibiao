@@ -24,6 +24,7 @@ interface ConfigUsagePayload {
   image_provider?: string;
   image_model_status?: string;
   bid_analysis_mode?: string;
+  bid_analysis_execution_mode?: string;
   outline_mode?: string;
   outline_expansion_mode?: string;
   table_requirement?: string;
@@ -46,6 +47,7 @@ const configUsageFields: Array<[keyof ConfigUsagePayload, string]> = [
   ['image_provider', 'imageProviders'],
   ['image_model_status', 'imageModelStatuses'],
   ['bid_analysis_mode', 'bidAnalysisModes'],
+  ['bid_analysis_execution_mode', 'bidAnalysisExecutionModes'],
   ['outline_mode', 'outlineModes'],
   ['outline_expansion_mode', 'outlineExpansionModes'],
   ['table_requirement', 'tableRequirements'],
