@@ -30,7 +30,7 @@
 **⚠️ 注册机制（P0 修订，双审查员实锤）**：该表自多项目改造（v37 拆库）后归属**项目库**（project.sqlite）。项目库开库只走 `ensureProjectSchemaHealth`（projectStoreRegistry.cjs:41-45 → sqliteDatabase.cjs:1651-1666），只补 `projectSchemaColumnGroups`（:1369 起）里注册的列；`migrations[]`/`applyMigrations` **只跑全局库**，且 v37 已把三域表从全局库剔除（:8-10 注释 + :1847-1853 空迁移栅栏）。因此列注册**必须**在 `projectSchemaColumnGroups` 追加条目：
 
 ```js
-{ table: 'technical_plan_generation_config', columns: { bid_analysis_execution_mode: "TEXT NOT NULL DEFAULT 'sequential'" } }
+{ version: 36, table: 'technical_plan_generation_config', columns: { bid_analysis_execution_mode: "TEXT NOT NULL DEFAULT 'sequential'" } }
 ```
 
 （写法参照 :1541-1547 `layout_check` 条目。）
@@ -53,8 +53,8 @@
 |---|---|---|
 | schema | `client/electron/services/sqliteDatabase.cjs` | `projectSchemaColumnGroups` 追加条目（见 2.1） |
 | store | `client/electron/services/technicalPlanStore.cjs` | 8 处：`initialState`（:62-97）、`createDefaultGenerationConfig`（:366-381）、`normalizeGenerationConfig`（:383-402）、`ensureGenerationConfigRow` INSERT（:685-721）、`loadGenerationConfig`（:740-769）、`writeGenerationConfig`（:771+）、`saveBidAnalysisConfig`（:2089-2096 解构加 `executionMode`）、`loadTechnicalPlan` 映射（:1947-1966），键名统一 `executionMode`（见 2.2） |
-| IPC 类型 | `client/src/shared/types/ipc.ts`（:799 saveBidAnalysisConfig 签名加 `executionMode?`；:60-72 `TechnicalPlanGenerationConfig` 接口同步加字段） | 类型完备（preload.cjs 纯 JS 无类型文件，payload 原样透传零改动，**不是触点**） |
-| 前端类型 | `client/src/features/technical-plan/types.ts`（:339 TechnicalPlanState 加 `executionMode`）+ BidAnalysisPage props | 类型声明同步 |
+| IPC 类型 | `client/src/shared/types/ipc.ts`（:799 saveBidAnalysisConfig 签名加 `executionMode?`） | preload.cjs 纯 JS 无类型文件，payload 原样透传零改动，**不是触点** |
+| 前端类型 | `client/src/features/technical-plan/types.ts`（:60-72 `TechnicalPlanGenerationConfig` 接口 + :339 `TechnicalPlanState` 各加 `executionMode`）+ BidAnalysisPage props | 类型声明同步 |
 | 前端接线 | `client/src/features/technical-plan/hooks/useTechnicalPlanWorkflow.ts`（:14-15 useState 初始值）、`client/src/features/technical-plan/pages/TechnicalPlanHome.tsx`（:485-488 / :1124-1125 / :1137 状态合并与 props 下传） | 默认 `'sequential'`（已核实 :55 cachedState 展开覆盖默认值，落点正确） |
 | 埋点 | `BidAnalysisPage.tsx:386` `trackConfigUsage` + `client/src/.../analytics.ts:48` | `bid_analysis_execution_mode` 随现有 `bid_analysis_mode` 模式加埋点 |
 
